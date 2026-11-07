@@ -494,9 +494,24 @@ class RelayAccountController extends AsyncNotifier<RelayAccountState> {
     }
     if (user == null) return base.copyWith(providers: await _loginProviders(backend));
     try {
-      return base.copyWith(user: () => user, hosts: await backend.listHosts());
+      return base.copyWith(user: () => user, hosts: await _listHostsWithRetry(backend));
     } catch (_) {
       return base.copyWith(user: () => user, hostsFailed: true);
+    }
+  }
+
+  /// The listing requested right after a sign-in fails intermittently (new
+  /// tokens are still settling on the Server), which used to surface as the
+  /// "could not load hosts" card. Retry briefly before giving up; the manual
+  /// retry stays available for a genuinely unreachable Server.
+  Future<List<RelayHost>> _listHostsWithRetry(RelayBackend backend) async {
+    for (var attempt = 0; ; attempt++) {
+      try {
+        return await backend.listHosts();
+      } catch (_) {
+        if (attempt >= 2 || !ref.mounted) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 500 * (attempt + 1)));
+      }
     }
   }
 

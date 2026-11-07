@@ -325,6 +325,109 @@ ACME 验证复用现有站点的 80 端口规则（`/.well-known/acme-challenge/
 - 未配置 WebSocket 反代（`/ws/v1/connect`，idle timeout 需 > 75 秒）。
 - 如意与手机端仍指向家中局域网中继 `192.168.1.6:8090`。
 
+## 11. 公网中继部署与双端验证（2026-11-07）
+
+### 11.1 部署形态
+
+服务器 `118.196.18.181`，中继容器**只绑回环**，由现有 Nginx 的 443 对外：
+
+| 位置 | 端口 | 说明 |
+|---|---|---|
+| 容器 `dsh-relay-server-1` | `127.0.0.1:18080` → 容器 `8080` | 不直接对外 |
+| Nginx | `443`（IP 站点 `default_server`） | 反代到 `18080`，含 WebSocket 升级 |
+| Nginx | `80` | 仍是原有域名站点 + ACME 验证 |
+
+对外地址：`https://118.196.18.181`（**不写端口**）。填 `:80` 会打到原有业务站点，填 `:18080` 只有服务器本机可达。
+
+部署文件在 `/root/dsh-relay/`：
+
+```yaml
+services:
+  server:
+    image: ghcr.io/liguobao/ds-harness-remote/server:latest
+    restart: unless-stopped
+    ports: ["127.0.0.1:18080:8080"]
+    environment:
+      DSH_SERVER_ACCOUNT: ${DSH_SERVER_ACCOUNT}
+      DSH_SERVER_PASSWORD: ${DSH_SERVER_PASSWORD}
+      DSH_SERVER_PUBLIC_URL: ${DSH_SERVER_PUBLIC_URL}   # https://118.196.18.181
+      DSH_SERVER_HOST: "0.0.0.0"
+    volumes: [relay-data:/app/data]
+```
+
+Nginx 反代要点：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:18080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $dsh_relay_upgrade;   # map: upgrade / close
+    proxy_read_timeout 3600s;    # 控制通道空闲上限是 75 秒，必须远大于它
+    proxy_send_timeout 3600s;
+    proxy_buffering off;
+}
+```
+
+### 11.2 部署时踩到的坑
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `docker pull ghcr.io/...` 卡住 8 分钟无进展 | 该机直连 ghcr 极慢 | 用 `ghcr.nju.edu.cn` 镜像源拉取（10 秒），再 `docker tag` 打回原名 |
+| WebSocket 握手测出 404 | 用 HTTP/2 发 `Upgrade` 头无意义 | 必须用 `curl --http1.1` 测；服务端本身正常 |
+| 容器起了但外网打不开 | 容器只绑 `127.0.0.1` | 这是刻意的，对外由 Nginx 443 承担 |
+
+### 11.3 双端实测结果
+
+服务端日志（如意上线）：
+
+```json
+{"event":"ws_hello_authenticated","meta":{"role":"host","clientVersion":"0.6.3",
+ "capabilities":["transport.lan","transport.p2p","transport.relay"]}}
+```
+
+客户端库走公网中继的完整回合：
+
+```
+LOGIN ok provider=password
+HOSTS count=1  XBB-4.local online=true harness=0.2.2-rc.1 plugin=0.6.3
+state=connecting → connected transport=relay
+CONNECTED sessions=9
+REPLY len=4 text=中继连通        ← 真实模型回复
+PROMPT_OK
+```
+
+iOS 模拟器（原生界面，非测试入口）：
+
+```
+RELAY_LOGIN: signedIn=true online=1 listed=true names=XBB-4.local
+All tests passed!
+```
+
+即：**如意作为 Host 上线 → 手机登录 → 发现设备 → 走 relay 建立加密连接 → 拉会话 → 发消息收到回复**，全链路在公网 IP + HTTPS 下成立。
+
+### 11.4 一个间歇性缺陷（尚未根治）
+
+三次 iOS 登录验证中**有一次**出现「没能获取主机列表」，同一时刻 `signedIn` 也变成 `false`。Nginx 访问日志对应：
+
+```
+GET /api/v1/devices/01a1b47d-...  401
+POST /api/v1/auth/refresh         401
+```
+
+即设备详情请求 401，随后刷新令牌也 401，客户端据此判定为登出。属于令牌刷新相关的偶发失败，不是网络不通（同一轮里 `POST /auth/login` 和 `/devices` 都是 200）。
+
+已做的缓解：`RelayAccountController.build()` 首次拉列表失败时**自动重试两次**（0.5s / 1s 退避），避免首次请求抖动直接显示重试卡片。缓解后连续运行 2 次中仍有 1 次失败，说明重试没覆盖到 `401 → 登出` 这条路径。
+
+待办与判断依据：
+
+- 优先怀疑 iOS 钥匙串**跨重装保留旧凭证**（集成测试每次重装 App，钥匙串不清），旧 refresh token 已被轮换 → 401。可用 `xcrun simctl keychain reset` 验证。
+- 若排除旧凭证，则查 `dsh_remote` 的单飞刷新是否覆盖 App 内多个 `RemoteAccount` 实例（单实例内有 `_refreshing` 保护，跨实例没有）。
+
+日志里另有一类 404（`/api/v1/auth/oauth/providers`、`/oauth/status`、`/oauth/github/status`）：App 探测的服务端能力，这台自建服务器未实现该路径，不影响密码登录，属正常降级。
+
 ## 10. 未验证项（不要当成已通过）
 
 - 真实 iPhone 上的 relay 连接（iOS 尚未做过任何真机验证）。

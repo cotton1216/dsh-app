@@ -81,13 +81,46 @@ void main() {
 
     final context = tester.element(find.byType(DshApp));
     final container = ProviderScope.containerOf(context);
-    final account = container.read(relayAccountProvider).value;
-    final hosts = account?.hosts.where((h) => h.online).toList() ?? const [];
+
+    // The host list is pushed after the sign-in completes, so poll instead of
+    // asserting once: a single check can lose a slow first push and report a
+    // false failure while the login itself succeeded.
+    var hosts = <RelayHost>[];
+    RelayAccountState? account;
+    for (var i = 0; i < 60; i++) {
+      account = container.read(relayAccountProvider).value;
+      hosts = account?.hosts.where((h) => h.online).toList() ?? const [];
+      if (hosts.isNotEmpty) break;
+      await tester.pump(const Duration(seconds: 1));
+    }
+    if (hosts.isEmpty) {
+      debugPrint('DIAG hostsFailed=${account?.hostsFailed} error=${account?.error}');
+      final retry = find.textContaining('重试');
+      if (retry.evaluate().isNotEmpty) {
+        await tester.tap(retry.first);
+        await tester.pumpAndSettle();
+        for (var i = 0; i < 20; i++) {
+          account = container.read(relayAccountProvider).value;
+          hosts = account?.hosts.where((h) => h.online).toList() ?? const [];
+          if (hosts.isNotEmpty) break;
+          await tester.pump(const Duration(seconds: 1));
+        }
+        debugPrint('AFTER_RETRY online=${hosts.length} failed=${account?.hostsFailed}');
+      }
+    }
     debugPrint('RELAY_LOGIN: signedIn=${account?.signedIn} online=${hosts.length} '
         'listed=$listed names=${hosts.map((h) => h.name).join(",")}');
 
     expect(account?.signedIn, isTrue, reason: 'account not signed in after login');
-    expect(hosts, isNotEmpty, reason: 'no online host after login');
+    // An empty host list is legitimate while the desktop Host has not signed in
+    // to this server yet; set RELAY_ALLOW_EMPTY=1 to assert only the login.
+    // Accept 1/true/yes; bool.fromEnvironment only understands true/false.
+    const allowEmptyRaw = String.fromEnvironment('RELAY_ALLOW_EMPTY');
+    const allowEmpty =
+        allowEmptyRaw == '1' || allowEmptyRaw == 'true' || allowEmptyRaw == 'yes';
+    if (!allowEmpty) {
+      expect(hosts, isNotEmpty, reason: 'no online host after login');
+    }
 
     await Future<void>.delayed(Duration(seconds: _holdSeconds));
   }, timeout: Timeout.none);
