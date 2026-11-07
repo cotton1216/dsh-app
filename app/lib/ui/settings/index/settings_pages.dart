@@ -43,7 +43,8 @@ import 'spots.dart';
 export 'spots.dart';
 
 /// The page for [id]; [sessionId] is the conversation open in the chat (权限
-/// shows its preset).
+/// shows its preset). Ids this device has no page for are filtered out of
+/// [SettingsIndex.spots] before anyone navigates to them.
 Widget settingsPage(SettingsPageId id, {String? sessionId}) => switch (id) {
   SettingsPageId.hub => const SettingsScreen(),
   SettingsPageId.appearance => const AppearancePage(),
@@ -84,8 +85,12 @@ Widget settingsPage(SettingsPageId id, {String? sessionId}) => switch (id) {
 /// What a settings link id opens: a page (by any of its link ids), or the
 /// page a row is on. Null for ids the index doesn't know.
 Widget? settingsPageForLink(String id, {String? sessionId}) {
-  if (SettingsIndex.pageForLink(id) case final page?) return settingsPage(page.id, sessionId: sessionId);
-  if (SettingsIndex.spotForLink(id) case final spot?) return spotPage(spot, sessionId: sessionId);
+  if (SettingsIndex.pageForLink(id) case final page?) {
+    return SettingsIndex.pageSupported(page.id) ? settingsPage(page.id, sessionId: sessionId) : null;
+  }
+  if (SettingsIndex.spotForLink(id) case final spot?) {
+    return SettingsIndex.spotSupported(spot) ? spotPage(spot, sessionId: sessionId) : null;
+  }
   return null;
 }
 

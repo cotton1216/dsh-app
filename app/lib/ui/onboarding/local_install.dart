@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../l10n/l10n.dart';
+import '../../platform_capabilities.dart';
+import '../remote/remote_screen.dart';
 import '../../runtime/local_footprint.dart';
 import '../../runtime/runtime_bridge.dart';
 import '../../runtime/runtime_state.dart';
@@ -66,6 +68,7 @@ class _LocalInstallPageState extends ConsumerState<LocalInstallPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (!PlatformCapabilities.localRuntime) return const RemoteScreen();
     final phase = ref.watch(localRuntimeProvider.select((s) => s.status.phase));
     final back = GlassIconButton(
       icon: AppIcons.back,

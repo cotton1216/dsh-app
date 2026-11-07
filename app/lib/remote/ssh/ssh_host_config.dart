@@ -4,6 +4,25 @@ import 'dart:math' as math;
 /// [SecretStore] under [SshSecrets] keys, never in this config.
 enum SshAuthMethod { password, privateKey }
 
+enum SshConnectionMode { managed, attach }
+
+/// Parses a token URL without ever including its contents in an error.
+Uri? parseAttachUrl(String text) {
+  try {
+    final uri = Uri.parse(text.trim());
+    final tokens = uri.queryParametersAll['token'];
+    if (uri.scheme != 'http' || uri.host != '127.0.0.1' || uri.userInfo.isNotEmpty ||
+        uri.hasFragment || !uri.hasPort || uri.port < 1 || uri.port > 65535 ||
+        (uri.path.isNotEmpty && uri.path != '/') || tokens == null ||
+        tokens.length != 1 || tokens.single.isEmpty || uri.queryParametersAll.length != 1) {
+      return null;
+    }
+    return uri;
+  } catch (_) {
+    return null;
+  }
+}
+
 /// The remote `dsh web` launch command used when none is configured.
 const defaultDshLaunchCommand = 'dsh web';
 
@@ -17,6 +36,8 @@ class SshHostConfig {
     required this.user,
     this.auth = SshAuthMethod.password,
     this.launchCommand = defaultDshLaunchCommand,
+    this.connectionMode = SshConnectionMode.managed,
+    this.remotePort,
     this.workingDirectory,
     this.hostKeyType,
     this.hostKeyFingerprint,
@@ -35,6 +56,8 @@ class SshHostConfig {
   /// Shell command that starts DSH's web server on the remote. dsh-app appends
   /// `--host 127.0.0.1 --port 0 --no-open`.
   final String launchCommand;
+  final SshConnectionMode connectionMode;
+  final int? remotePort;
 
   /// Default cwd for new conversations on this host (and where `dsh web`
   /// starts). `~/…` is expanded on the remote. Null: DSH's own default.
@@ -51,7 +74,7 @@ class SshHostConfig {
 
   /// Fields that require a new SSH session when they change (name and the
   /// pinned key don't).
-  String get connectionKey => [host, port, user, auth.name, launchCommand.trim()].join('\u0000');
+  String get connectionKey => [host, port, user, auth.name, launchCommand.trim(), connectionMode.name, remotePort].join('\u0000');
 
   /// Changing where we connect forgets the pinned key: it belonged to the old
   /// machine.
@@ -62,6 +85,8 @@ class SshHostConfig {
     String? user,
     SshAuthMethod? auth,
     String? launchCommand,
+    SshConnectionMode? connectionMode,
+    int? Function()? remotePort,
     String? Function()? workingDirectory,
     String? Function()? hostKeyType,
     String? Function()? hostKeyFingerprint,
@@ -75,6 +100,8 @@ class SshHostConfig {
       user: user ?? this.user,
       auth: auth ?? this.auth,
       launchCommand: launchCommand ?? this.launchCommand,
+      connectionMode: connectionMode ?? this.connectionMode,
+      remotePort: remotePort != null ? remotePort() : this.remotePort,
       workingDirectory: workingDirectory != null ? workingDirectory() : this.workingDirectory,
       hostKeyType: hostKeyType != null ? hostKeyType() : (moved ? null : this.hostKeyType),
       hostKeyFingerprint: hostKeyFingerprint != null ? hostKeyFingerprint() : (moved ? null : this.hostKeyFingerprint),
@@ -89,6 +116,8 @@ class SshHostConfig {
     'user': user,
     'auth': auth.name,
     'launchCommand': launchCommand,
+    'connectionMode': connectionMode.name,
+    if (remotePort != null) 'remotePort': remotePort,
     if (workingDirectory != null) 'workingDirectory': workingDirectory,
     if (hostKeyType != null) 'hostKeyType': hostKeyType,
     if (hostKeyFingerprint != null) 'hostKeyFingerprint': hostKeyFingerprint,
@@ -112,6 +141,8 @@ class SshHostConfig {
       user: user,
       auth: SshAuthMethod.values.firstWhere((m) => m.name == raw['auth'], orElse: () => SshAuthMethod.password),
       launchCommand: command is String && command.trim().isNotEmpty ? command : defaultDshLaunchCommand,
+      connectionMode: raw['connectionMode'] == 'attach' ? SshConnectionMode.attach : SshConnectionMode.managed,
+      remotePort: raw['remotePort'] is int && raw['remotePort'] > 0 && raw['remotePort'] < 65536 ? raw['remotePort'] as int : null,
       workingDirectory: cwd is String && cwd.trim().isNotEmpty ? cwd : null,
       hostKeyType: raw['hostKeyType'] as String?,
       hostKeyFingerprint: raw['hostKeyFingerprint'] as String?,
@@ -134,25 +165,29 @@ class SshHostConfig {
       other.user == user &&
       other.auth == auth &&
       other.launchCommand == launchCommand &&
+      other.connectionMode == connectionMode &&
+      other.remotePort == remotePort &&
       other.workingDirectory == workingDirectory &&
       other.hostKeyType == hostKeyType &&
       other.hostKeyFingerprint == hostKeyFingerprint;
 
   @override
   int get hashCode =>
-      Object.hash(id, name, host, port, user, auth, launchCommand, workingDirectory, hostKeyType, hostKeyFingerprint);
+      Object.hash(id, name, host, port, user, auth, launchCommand, connectionMode, remotePort, workingDirectory, hostKeyType, hostKeyFingerprint);
 }
 
 /// The secret material for one SSH host, loaded from the [SecretStore].
 class SshSecrets {
-  const SshSecrets({this.password, this.privateKey, this.passphrase});
+  const SshSecrets({this.password, this.privateKey, this.passphrase, this.backendToken});
 
   final String? password;
 
   /// PEM text (OpenSSH, PKCS#1 RSA or SEC1 EC).
   final String? privateKey;
   final String? passphrase;
+  final String? backendToken;
 
+  static String backendTokenKey(String hostId) => 'ssh.$hostId.backendToken';
   static String passwordKey(String hostId) => 'ssh.$hostId.password';
   static String privateKeyKey(String hostId) => 'ssh.$hostId.privateKey';
   static String passphraseKey(String hostId) => 'ssh.$hostId.passphrase';

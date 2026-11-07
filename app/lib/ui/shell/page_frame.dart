@@ -146,6 +146,9 @@ class _AppPageState extends State<AppPage> {
       if (mounted) _measureHeader();
     });
     final theme = Theme.of(context);
+    // A page can also be a root (iOS opens straight on 远程主机, with no local
+    // engine to set up): a back key there would pop nothing.
+    final canPop = ModalRoute.of(context)?.canPop ?? false;
     final padding = MediaQuery.paddingOf(context);
     const barHeight = 56.0;
     final top = padding.top + barHeight;
@@ -229,11 +232,13 @@ class _AppPageState extends State<AppPage> {
                       middleSpacing: 8,
                       leading: Center(
                         widthFactor: 1,
-                        child: GlassIconButton(
-                          icon: AppIcons.back,
-                          tooltip: l10n.commonBack,
-                          onPressed: () => Navigator.of(context).maybePop(),
-                        ),
+                        child: canPop
+                            ? GlassIconButton(
+                                icon: AppIcons.back,
+                                tooltip: l10n.commonBack,
+                                onPressed: () => Navigator.of(context).maybePop(),
+                              )
+                            : const SizedBox(width: 44),
                       ),
                       middle: ValueListenableBuilder<double>(
                         valueListenable: _offset,

@@ -173,6 +173,7 @@ class HostsController extends Notifier<HostsState> {
       }
     }
 
+    await put(SshSecrets.backendTokenKey(id), secrets.backendToken);
     if (config.auth == SshAuthMethod.password) {
       await put(SshSecrets.passwordKey(id), secrets.password);
       await _secrets.delete(SshSecrets.privateKeyKey(id));
@@ -197,6 +198,7 @@ class HostsController extends Notifier<HostsState> {
       password: await get(SshSecrets.passwordKey(id)),
       privateKey: await get(SshSecrets.privateKeyKey(id)),
       passphrase: await get(SshSecrets.passphraseKey(id)),
+      backendToken: await get(SshSecrets.backendTokenKey(id)),
     );
   }
 
@@ -204,7 +206,7 @@ class HostsController extends Notifier<HostsState> {
   Future<void> removeSsh(String id) async {
     await _loaded;
     await _persist([...state.ssh.where((h) => h.id != id)]);
-    for (final key in [SshSecrets.passwordKey(id), SshSecrets.privateKeyKey(id), SshSecrets.passphraseKey(id)]) {
+    for (final key in [SshSecrets.passwordKey(id), SshSecrets.privateKeyKey(id), SshSecrets.passphraseKey(id), SshSecrets.backendTokenKey(id)]) {
       try {
         await _secrets.delete(key);
       } catch (_) {}

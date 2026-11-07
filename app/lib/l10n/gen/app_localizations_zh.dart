@@ -11978,6 +11978,24 @@ class L10nZh extends L10n {
   String get readListFailed => '未更新 · 上次结果';
 
   @override
+  String get remoteAttachMode => '连接已有后端';
+
+  @override
+  String get remoteManagedMode => '启动独立后端';
+
+  @override
+  String get remoteAttachUrl => '桌面端授权连接地址';
+
+  @override
+  String get remoteAttachHelp => '连接电脑正在运行的同一后端，不启动或重启引擎。连接地址包含授权令牌，请勿分享。';
+
+  @override
+  String get remoteAttachUrlInvalid => '请输入桌面端提供的有效本机 HTTP 授权地址（含端口和 token）。';
+
+  @override
+  String get remoteAttachConnecting => '连接正在运行的桌面后端';
+
+  @override
   String get remoteStartupSection => '启动';
 
   @override

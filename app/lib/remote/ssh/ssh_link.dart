@@ -209,6 +209,10 @@ class SshHostLink implements HostLink {
     at(HostLinkStep.connect, detail: _config.address);
     final secrets = await _loadSecrets();
     _checkOpen();
+    if (_config.connectionMode == SshConnectionMode.attach &&
+        ((_config.remotePort ?? 0) < 1 || (_config.remotePort ?? 0) > 65535 || (secrets.backendToken ?? '').isEmpty)) {
+      throw HostLinkError(HostLinkErrorKind.loginFailed, appL10n.remoteErrDshTokenRejected);
+    }
     final transport = await _transportFactory(SshConnectParams.of(_config, secrets), (key) async {
       if (_closed) return false;
       at(HostLinkStep.verifyHostKey, detail: '${key.shortType} ${key.fingerprint}');
@@ -243,18 +247,20 @@ class SshHostLink implements HostLink {
     }
     // Own the authenticated connection while bootstrap/probe are pending.
     _connectingTransport = transport;
-    at(HostLinkStep.startDsh, detail: appL10n.remoteCheckingDsh);
+    at(HostLinkStep.startDsh, detail: _config.connectionMode == SshConnectionMode.attach
+        ? appL10n.remoteAttachConnecting : appL10n.remoteCheckingDsh);
     try {
-      final bootstrap = RemoteDshBootstrap(
-        transport,
-        launchCommand: _config.launchCommand,
-        workingDirectory: _config.workingDirectory,
-        environment: remoteEnvironment,
-      );
-      final endpoint = await bootstrap.ensureRunning(
-        forceRestart: _forceRestart,
-        onDetail: (d) => at(HostLinkStep.startDsh, detail: d),
-      );
+      final endpoint = _config.connectionMode == SshConnectionMode.attach
+          ? RemoteDshEndpoint(port: _config.remotePort!, token: secrets.backendToken!, reused: true)
+          : await RemoteDshBootstrap(
+              transport,
+              launchCommand: _config.launchCommand,
+              workingDirectory: _config.workingDirectory,
+              environment: remoteEnvironment,
+            ).ensureRunning(
+              forceRestart: _forceRestart,
+              onDetail: (d) => at(HostLinkStep.startDsh, detail: d),
+            );
       _checkOpen();
       _forceRestart = false;
 
@@ -268,7 +274,7 @@ class SshHostLink implements HostLink {
             .timeout(tunnelProbeTimeout);
       } catch (e) {
         // A reused DSH whose port no longer answers: start a fresh one.
-        if (endpoint.reused && e is TunnelRefused) _forceRestart = true;
+        if (_config.connectionMode == SshConnectionMode.managed && endpoint.reused && e is TunnelRefused) _forceRestart = true;
         throw HostLinkError(HostLinkErrorKind.tunnelFailed, appL10n.remoteErrDshPort, detail: '$e', retryable: true);
       }
       _checkOpen();
@@ -323,7 +329,7 @@ class SshHostLink implements HostLink {
         hostHeader: endpoint.authority,
       );
     } on DshHttpException catch (e) {
-      if (e.statusCode == 401 && endpoint.reused) {
+      if (e.statusCode == 401 && endpoint.reused && _config.connectionMode == SshConnectionMode.managed) {
         // Stale log from a process that's gone or restarted: start fresh.
         _forceRestart = true;
       }

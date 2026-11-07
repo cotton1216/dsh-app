@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import '../platform_capabilities.dart';
+
 /// Lifecycle of the on-device Linux runtime and the local DSH server.
 enum RuntimePhase {
   notInstalled,
@@ -503,21 +505,38 @@ class ManagedSkillInstallResponse {
 /// Dart side of the `dsh/runtime` platform channels implemented in Kotlin.
 class RuntimeBridge {
   RuntimeBridge({MethodChannel? methods, EventChannel? events})
-    : _methods = methods ?? const MethodChannel('dsh/runtime'),
+    : _nativeMethods = methods ?? const MethodChannel('dsh/runtime'),
       _events = events ?? const EventChannel('dsh/runtime/events');
 
-  final MethodChannel _methods;
+  final MethodChannel _nativeMethods;
   final EventChannel _events;
+
+  /// Throws [MissingPluginException] where no engine runs (iOS) — the same
+  /// failure a platform without the Kotlin side already raises, so every
+  /// existing `on MissingPluginException` fallback keeps working.
+  MethodChannel get _methods {
+    if (!PlatformCapabilities.localRuntime) {
+      throw MissingPluginException('This device has no local runtime');
+    }
+    return _nativeMethods;
+  }
+
   Stream<RuntimeEvent>? _stream;
 
-  Stream<RuntimeEvent> get events => _stream ??= _events
-      .receiveBroadcastStream()
-      .map((raw) => _parse(raw as Map<Object?, Object?>))
-      .where((e) => e != null)
-      .cast<RuntimeEvent>()
-      .asBroadcastStream();
+  /// Status pushes. Empty where no engine runs on this device, so a listener
+  /// keeps working without a native side ever answering.
+  Stream<RuntimeEvent> get events {
+    if (!PlatformCapabilities.localRuntime) return Stream<RuntimeEvent>.empty();
+    return _stream ??= _events
+        .receiveBroadcastStream()
+        .map((raw) => _parse(raw as Map<Object?, Object?>))
+        .where((e) => e != null)
+        .cast<RuntimeEvent>()
+        .asBroadcastStream();
+  }
 
   Future<RuntimeStatus> status() async {
+    if (!PlatformCapabilities.localRuntime) return const RuntimeStatus.unknown();
     final map = await _methods.invokeMapMethod<Object?, Object?>('getStatus');
     return map == null ? const RuntimeStatus.unknown() : RuntimeStatus.fromMap(map);
   }
@@ -624,6 +643,7 @@ class RuntimeBridge {
 
   /// Whether Android leaves DSH out of battery optimization; null without the native side.
   Future<bool?> batteryExempt() async {
+    if (!PlatformCapabilities.localRuntime) return null;
     try {
       return await _methods.invokeMethod<bool>('batteryExempt');
     } on MissingPluginException {
@@ -633,6 +653,7 @@ class RuntimeBridge {
 
   /// Asks for the exemption (the system dialog, else the closest settings page); false if none opened.
   Future<bool?> requestBatteryExempt() async {
+    if (!PlatformCapabilities.localRuntime) return null;
     try {
       return await _methods.invokeMethod<bool>('requestBatteryExempt');
     } on MissingPluginException {
@@ -643,6 +664,7 @@ class RuntimeBridge {
   /// The phone maker (`vivo`, `xiaomi`, `huawei`, `honor`, `oppo`, `samsung`, null for the
   /// rest) and the app's name as the system settings list it; null without the native side.
   Future<BackgroundSettingsInfo?> backgroundSettings() async {
+    if (!PlatformCapabilities.localRuntime) return null;
     try {
       final map = await _methods.invokeMapMethod<Object?, Object?>('backgroundSettings');
       if (map == null) return null;
@@ -655,6 +677,7 @@ class RuntimeBridge {
   /// Opens the maker's background-running page, else the app's system details page:
   /// `vendor`, `details`, or null when nothing opened.
   Future<String?> openBackgroundSettings() async {
+    if (!PlatformCapabilities.localRuntime) return null;
     try {
       return await _methods.invokeMethod<String>('openBackgroundSettings');
     } on MissingPluginException {
@@ -666,6 +689,7 @@ class RuntimeBridge {
   /// `autostart`, `popup`), else the app's system details page: `vendor`, `details`, or null
   /// when nothing opened (also without the native side).
   Future<String?> openVendorSettings(String vendorSwitch) async {
+    if (!PlatformCapabilities.localRuntime) return null;
     try {
       return await _methods.invokeMethod<String>('openVendorSettings', {'switch': vendorSwitch});
     } on MissingPluginException {
@@ -678,6 +702,7 @@ class RuntimeBridge {
   /// Whether the active network is metered (mobile data); null when unknown or without the
   /// native side.
   Future<bool?> networkMetered() async {
+    if (!PlatformCapabilities.localRuntime) return null;
     try {
       return await _methods.invokeMethod<bool>('networkMetered');
     } on MissingPluginException {

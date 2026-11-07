@@ -43,11 +43,12 @@ void main() {
     HostKeyPinner? pin,
     Backoff? backoff,
     bool retryFirstOpen = true,
+    SshSecrets secrets = const SshSecrets(password: 'pw'),
     StreamController<void>? kicks,
   }) {
     final l = SshHostLink(
       config: config,
-      loadSecrets: () async => const SshSecrets(password: 'pw'),
+      loadSecrets: () async => secrets,
       promptHostKey: prompt,
       pinHostKey: pin,
       transportFactory: server.connect,
@@ -61,6 +62,60 @@ void main() {
     links.add(l);
     return l;
   }
+
+  test('attach config roundtrip and URL validation', () {
+    final config = sampleSsh.copyWith(connectionMode: SshConnectionMode.attach, remotePort: () => 54829);
+    expect(SshHostConfig.fromJson(config.toJson()), config);
+    expect(config.toJson().toString(), isNot(contains('attach-token')));
+    expect(config.connectionKey, isNot(sampleSsh.connectionKey));
+    expect(config.copyWith(remotePort: () => 54830).connectionKey, isNot(config.connectionKey));
+    expect(parseAttachUrl('http://127.0.0.1:54829/?token=abc')?.port, 54829);
+    for (final invalid in [
+      'http://localhost:54829/?token=abc',
+      'http://user@127.0.0.1:54829/?token=abc',
+      'http://127.0.0.1:54829/?token=abc#x',
+      'http://127.0.0.1:54829/?token=a&token=b',
+      'http://127.0.0.1:65536/?token=abc',
+      'http://127.0.0.1/?token=abc',
+      'http://127.0.0.1:54829/?token=',
+    ]) {
+      expect(parseAttachUrl(invalid), isNull);
+    }
+  });
+
+  test('attach forwards without running a remote shell, including reconnect', () async {
+    server.remote.pid = 500;
+    final config = sampleSsh.copyWith(connectionMode: SshConnectionMode.attach, remotePort: () => server.remote.port);
+    final l = link(config: config, secrets: const SshSecrets(password: 'pw', backendToken: 'attach-token'));
+    await l.open();
+    expect(connector.calls.single.token, isNotEmpty);
+    expect(connector.calls.single.hostHeader, '127.0.0.1:${server.remote.port}');
+    final reconnected = nextStatus(l, (status) => status.isConnected, what: 'attach reconnect');
+    l.debugDropTransport();
+    await reconnected;
+    expect(server.transports.every((t) => t.scripts.isEmpty), isTrue);
+    expect(server.remote.launches, 0);
+  });
+
+  test('attach refused tunnel and rejected token never restart the server', () async {
+    server.remote.pid = 500;
+    server.remote.tunnelErrors.add(const TunnelRefused());
+    connector.failNext.add(const DshHttpException(401, 'rejected'));
+    final l = link(
+      config: sampleSsh.copyWith(connectionMode: SshConnectionMode.attach, remotePort: () => server.remote.port),
+      secrets: const SshSecrets(password: 'pw', backendToken: 'attach-token'),
+    );
+    await l.open();
+    expect(server.transports.length, greaterThanOrEqualTo(3));
+    expect(server.transports.every((t) => t.scripts.isEmpty), isTrue);
+    expect(server.remote.launches, 0);
+  });
+
+  test('attach missing token fails before SSH', () async {
+    final l = link(config: sampleSsh.copyWith(connectionMode: SshConnectionMode.attach, remotePort: () => 54829));
+    await expectLater(l.open(), throwsA(isA<HostLinkError>()));
+    expect(server.transports, isEmpty);
+  });
 
   test('a mux stuck reconnecting over live SSH restarts a dead DSH', () async {
     final l = link();

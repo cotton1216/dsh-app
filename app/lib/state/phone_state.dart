@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../phone/phone_channel.dart';
+import '../platform_capabilities.dart';
 import '../l10n/l10n.dart';
 import '../runtime/runtime_bridge.dart';
 import '../runtime/runtime_state.dart';
@@ -90,6 +91,7 @@ class PhoneController extends Notifier<PhoneState> {
 
   @override
   PhoneState build() {
+    if (!PlatformCapabilities.phoneControl) return const PhoneState(loaded: true);
     ref.onDispose(() => _sub?.cancel());
     unawaited(_loadDisclosure());
     unawaited(refresh());

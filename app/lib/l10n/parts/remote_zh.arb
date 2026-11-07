@@ -1,4 +1,10 @@
 {
+  "remoteAttachMode": "连接已有后端",
+  "remoteManagedMode": "启动独立后端",
+  "remoteAttachUrl": "桌面端授权连接地址",
+  "remoteAttachHelp": "连接电脑正在运行的同一后端，不启动或重启引擎。连接地址包含授权令牌，请勿分享。",
+  "remoteAttachUrlInvalid": "请输入桌面端提供的有效本机 HTTP 授权地址（含端口和 token）。",
+  "remoteAttachConnecting": "连接正在运行的桌面后端",
   "remoteStartupSection": "启动",
   "remoteAutoConnectOnStartup": "连接上次使用的主机",
   "remoteAutoConnectOnStartupHint": "关闭后从本机开始",

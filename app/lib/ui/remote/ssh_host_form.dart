@@ -48,6 +48,8 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
   final _password = TextEditingController();
   final _privateKey = TextEditingController();
   final _passphrase = TextEditingController();
+  final _backendUrl = TextEditingController();
+  late SshConnectionMode _connectionMode = widget.existing?.connectionMode ?? SshConnectionMode.managed;
 
   late SshAuthMethod _auth = widget.existing?.auth ?? SshAuthMethod.password;
   late String? _keyType = widget.existing?.hostKeyType;
@@ -86,6 +88,7 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
     _password,
     _privateKey,
     _passphrase,
+    _backendUrl,
   ]);
 
   String _signature() => jsonEncode({
@@ -98,6 +101,8 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
     'password': _password.text,
     'privateKey': _privateKey.text,
     'passphrase': _passphrase.text,
+    'backendUrl': _backendUrl.text,
+    'connectionMode': _connectionMode.name,
     'auth': _auth.name,
     'keyType': _keyType,
     'keyFingerprint': _keyFingerprint,
@@ -123,7 +128,7 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
 
   Future<void> _loadSecrets() async {
     final clean = jsonDecode(_clean) as Map<String, dynamic>;
-    final controllers = [_password, _privateKey, _passphrase];
+    final controllers = [_password, _privateKey, _passphrase, _backendUrl];
     final initial = {for (final controller in controllers) controller: controller.text};
     final edited = <TextEditingController>{};
     void trackEdits() {
@@ -144,7 +149,11 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
       }
     }
     if (!mounted) return;
+    final backendUrl = widget.existing?.remotePort != null && (secrets.backendToken ?? '').isNotEmpty
+        ? Uri(scheme: 'http', host: '127.0.0.1', port: widget.existing!.remotePort, path: '/', queryParameters: {'token': secrets.backendToken!}).toString()
+        : '';
     setState(() {
+      if (!edited.contains(_backendUrl)) _backendUrl.text = backendUrl;
       // Text edits (including paste and an explicit clear) win over a late
       // storage read. Selection-only changes still allow the initial load.
       if (!edited.contains(_password)) _password.text = secrets.password ?? '';
@@ -157,6 +166,7 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
         'password': secrets.password ?? '',
         'privateKey': secrets.privateKey ?? '',
         'passphrase': secrets.passphrase ?? '',
+        'backendUrl': backendUrl,
       });
     });
   }
@@ -165,7 +175,7 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
   void dispose() {
     unawaited(_testSub?.cancel());
     unawaited(_test?.close());
-    for (final c in [_name, _host, _port, _user, _command, _cwd, _password, _privateKey, _passphrase]) {
+    for (final c in [_name, _host, _port, _user, _command, _cwd, _password, _privateKey, _passphrase, _backendUrl]) {
       c.dispose();
     }
     super.dispose();
@@ -177,6 +187,8 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
     final user = _user.text.trim();
     final port = int.tryParse(_port.text.trim());
     final errors = <_F, String>{
+      if (_connectionMode == SshConnectionMode.attach && parseAttachUrl(_backendUrl.text) == null)
+        _F.backendUrl: context.l10n.remoteAttachUrlInvalid,
       if (host.isEmpty) _F.host: context.l10n.remoteSshAddressRequired,
       if (user.isEmpty) _F.user: context.l10n.remoteSshUsernameRequired,
       if (port == null || port <= 0 || port > 65535) _F.port: '1–65535',
@@ -213,6 +225,8 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
       port: port!,
       user: user,
       auth: _auth,
+      connectionMode: _connectionMode,
+      remotePort: _connectionMode == SshConnectionMode.attach ? parseAttachUrl(_backendUrl.text)!.port : null,
       launchCommand: _command.text.trim().isEmpty ? defaultDshLaunchCommand : _command.text.trim(),
       workingDirectory: _cwd.text.trim().isEmpty ? null : _cwd.text.trim(),
       hostKeyType: keyValid ? _keyType : null,
@@ -226,7 +240,8 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
   }
 
   SshSecrets get _secrets =>
-      SshSecrets(password: _password.text, privateKey: _privateKey.text, passphrase: _passphrase.text);
+      SshSecrets(password: _password.text, privateKey: _privateKey.text, passphrase: _passphrase.text,
+        backendToken: _connectionMode == SshConnectionMode.attach ? parseAttachUrl(_backendUrl.text)?.queryParameters['token'] : '');
 
   Future<void> _runTest() async {
     FocusManager.instance.primaryFocus?.unfocus();
@@ -277,6 +292,7 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
     setState(() => _saving = true);
     try {
       await ref.read(hostsProvider.notifier).saveSsh(config, secrets: _secrets);
+      ref.invalidate(hostLinkProvider(HostRef.ssh(_id)));
       if (mounted) Navigator.of(context).pop(config);
     } catch (e) {
       if (mounted) setState(() => _formError = context.l10n.commonSaveFailed);
@@ -558,7 +574,7 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
             ),
             SettingsSection(
               title: 'DSH',
-              footer: Text.rich(
+              footer: _connectionMode == SshConnectionMode.attach ? Text(l10n.remoteAttachHelp) : Text.rich(
                 TextSpan(
                   children: [
                     TextSpan(text: installHint.first),
@@ -573,7 +589,29 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
               children: [
                 FormFieldGroup(
                   children: [
-                    FormFieldBlock(
+                    SegmentedPill<SshConnectionMode>(
+                      segments: [
+                        PillSegment(SshConnectionMode.managed, l10n.remoteManagedMode),
+                        PillSegment(SshConnectionMode.attach, l10n.remoteAttachMode),
+                      ],
+                      selected: _connectionMode,
+                      onChanged: (value) => setState(() => _connectionMode = value),
+                    ),
+                    if (_connectionMode == SshConnectionMode.attach)
+                      FormFieldBlock(
+                        key: _fieldKeys[_F.backendUrl],
+                        label: l10n.remoteAttachUrl,
+                        error: _errors[_F.backendUrl],
+                        child: TextField(
+                          controller: _backendUrl,
+                          obscureText: true,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          enableIMEPersonalizedLearning: false,
+                          onChanged: (_) => _edited(_F.backendUrl),
+                        ),
+                      ),
+                    if (_connectionMode == SshConnectionMode.managed) FormFieldBlock(
                       label: l10n.remoteStartCommand,
                       helper: l10n.remoteStartCommandHelp,
                       child: TextField(controller: _command, autocorrect: false, style: mono),
@@ -698,7 +736,7 @@ class _SshHostFormPageState extends ConsumerState<SshHostFormPage> {
 }
 
 /// The fields of a form page.
-enum _F { host, user, port, password, key }
+enum _F { host, user, port, password, key, backendUrl }
 
 /// A compact text action in a field label row; its label ends flush with the
 /// field's edge.

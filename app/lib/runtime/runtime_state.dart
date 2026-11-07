@@ -3,6 +3,7 @@ import 'dart:collection';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../platform_capabilities.dart';
 import '../state/settings_state.dart';
 import '../state/read_list_epoch.dart';
 import 'runtime_bridge.dart';
@@ -58,6 +59,7 @@ class LocalRuntimeController extends Notifier<LocalRuntimeState> {
 
   @override
   LocalRuntimeState build() {
+    if (!PlatformCapabilities.localRuntime) return const LocalRuntimeState(loaded: true);
     // Keep collecting before the log screen opens, without watching its updates.
     ref.read(localRuntimeLogsProvider);
     _sub = _bridge.events.listen(_onEvent, onError: (_) {});
@@ -138,6 +140,7 @@ class LocalRuntimeLogsController extends Notifier<List<String>> {
 
   @override
   List<String> build() {
+    if (!PlatformCapabilities.localRuntime) return const [];
     final r = ref;
     final bridge = r.read(runtimeBridgeProvider);
     final lines = ListQueue<String>();

@@ -21950,6 +21950,42 @@ abstract class L10n {
   /// **'未更新 · 上次结果'**
   String get readListFailed;
 
+  /// No description provided for @remoteAttachMode.
+  ///
+  /// In zh, this message translates to:
+  /// **'连接已有后端'**
+  String get remoteAttachMode;
+
+  /// No description provided for @remoteManagedMode.
+  ///
+  /// In zh, this message translates to:
+  /// **'启动独立后端'**
+  String get remoteManagedMode;
+
+  /// No description provided for @remoteAttachUrl.
+  ///
+  /// In zh, this message translates to:
+  /// **'桌面端授权连接地址'**
+  String get remoteAttachUrl;
+
+  /// No description provided for @remoteAttachHelp.
+  ///
+  /// In zh, this message translates to:
+  /// **'连接电脑正在运行的同一后端，不启动或重启引擎。连接地址包含授权令牌，请勿分享。'**
+  String get remoteAttachHelp;
+
+  /// No description provided for @remoteAttachUrlInvalid.
+  ///
+  /// In zh, this message translates to:
+  /// **'请输入桌面端提供的有效本机 HTTP 授权地址（含端口和 token）。'**
+  String get remoteAttachUrlInvalid;
+
+  /// No description provided for @remoteAttachConnecting.
+  ///
+  /// In zh, this message translates to:
+  /// **'连接正在运行的桌面后端'**
+  String get remoteAttachConnecting;
+
   /// No description provided for @remoteStartupSection.
   ///
   /// In zh, this message translates to:

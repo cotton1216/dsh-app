@@ -1,4 +1,10 @@
 {
+  "remoteAttachMode": "Attach existing host",
+  "remoteManagedMode": "Start separate host",
+  "remoteAttachUrl": "Desktop authorization URL",
+  "remoteAttachHelp": "Connect to the running desktop host without starting or restarting its engine. This URL contains a secret token; do not share it.",
+  "remoteAttachUrlInvalid": "Enter a valid desktop loopback HTTP authorization URL with a port and token.",
+  "remoteAttachConnecting": "Connecting to the running desktop host",
   "remoteStartupSection": "On launch",
   "remoteAutoConnectOnStartup": "Connect to the last host",
   "remoteAutoConnectOnStartupHint": "When off, start on this phone",

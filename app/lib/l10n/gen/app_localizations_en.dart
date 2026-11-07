@@ -12580,6 +12580,25 @@ class L10nEn extends L10n {
   String get readListFailed => 'Not updated · previous results';
 
   @override
+  String get remoteAttachMode => 'Attach existing host';
+
+  @override
+  String get remoteManagedMode => 'Start separate host';
+
+  @override
+  String get remoteAttachUrl => 'Desktop authorization URL';
+
+  @override
+  String get remoteAttachHelp =>
+      'Connect to the running desktop host without starting or restarting its engine. This URL contains a secret token; do not share it.';
+
+  @override
+  String get remoteAttachUrlInvalid => 'Enter a valid desktop loopback HTTP authorization URL with a port and token.';
+
+  @override
+  String get remoteAttachConnecting => 'Connecting to the running desktop host';
+
+  @override
   String get remoteStartupSection => 'On launch';
 
   @override

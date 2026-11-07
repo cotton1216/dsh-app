@@ -8,6 +8,7 @@
 // row can import it.
 
 import '../../../l10n/l10n.dart';
+import '../../../platform_capabilities.dart';
 
 /// A piece of UI text, resolved in a given language.
 typedef Label = String Function(L10n l10n);
@@ -202,14 +203,39 @@ abstract final class SettingsIndex {
   /// Rows that aren't page entries.
   static final List<SettingSpot> rows = List.unmodifiable(_rows);
 
-  /// Every spot: the rows and each page's entry.
-  static final List<SettingSpot> spots = [
+  /// Every spot: the rows and each page's entry, minus what this device can't
+  /// do. A remote-only client (iOS) has no 本机 engine and no phone control, so
+  /// its pages, rows and search results leave those out.
+  static List<SettingSpot> get spots => _allSpots.where(spotSupported).toList();
+
+  /// Pages only a device that runs DSH itself can open.
+  static const _localOnlyPages = {
+    SettingsPageId.phone,
+    SettingsPageId.phoneAppRules,
+    SettingsPageId.phoneDnd,
+    SettingsPageId.phoneUnlocks,
+    SettingsPageId.engine,
+    SettingsPageId.background,
+    SettingsPageId.systemAccess,
+  };
+
+  static bool pageSupported(SettingsPageId id) => PlatformCapabilities.localRuntime || !_localOnlyPages.contains(id);
+
+  /// Whether [spot] belongs on this device: its page has to be here, and so do
+  /// the conditions only a local runtime or phone control meets.
+  static bool spotSupported(SettingSpot spot) {
+    if (!pageSupported(spot.opens ?? spot.page)) return false;
+    if (PlatformCapabilities.localRuntime) return true;
+    return spot.condition != SpotCondition.localHost && spot.condition != SpotCondition.phoneControlOn;
+  }
+
+  static final List<SettingSpot> _allSpots = [
     for (final p in _pages)
       if (p.parent != null) p.entry,
     ..._rows,
   ];
 
-  static final Map<String, SettingSpot> _byId = {for (final s in spots) s.id: s};
+  static final Map<String, SettingSpot> _byId = {for (final s in _allSpots) s.id: s};
 
   static SettingsPageMeta page(SettingsPageId id) => pages[id]!;
 

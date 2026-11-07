@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../l10n/l10n.dart';
+import '../../platform_capabilities.dart';
+import '../remote/remote_screen.dart';
 import '../../runtime/runtime_bridge.dart';
 import '../../runtime/runtime_state.dart';
 import '../../runtime/local_footprint.dart';
@@ -66,6 +68,7 @@ class EngineScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (!PlatformCapabilities.localRuntime) return const RemoteScreen();
     final l10n = context.l10n;
     final state = ref.watch(localRuntimeProvider);
     final status = state.status;

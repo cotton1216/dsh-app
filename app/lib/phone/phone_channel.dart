@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 
 import '../l10n/l10n.dart';
+import '../platform_capabilities.dart';
 
 // ── Wire helpers ─────────────────────────────────────────────────────────────
 
@@ -909,20 +910,30 @@ class PhoneLogEntry {
 /// Typed wrapper over `dsh/phone` + `dsh/phone/events`.
 class PhoneChannel {
   PhoneChannel({MethodChannel? methods, EventChannel? events})
-    : _methods = methods ?? const MethodChannel('dsh/phone'),
+    : _nativeMethods = methods ?? const MethodChannel('dsh/phone'),
       _events = events ?? const EventChannel('dsh/phone/events');
 
-  final MethodChannel _methods;
+  final MethodChannel _nativeMethods;
   final EventChannel _events;
+
+  MethodChannel get _methods {
+    if (!PlatformCapabilities.phoneControl) throw MissingPluginException('This device has no phone control');
+    return _nativeMethods;
+  }
+
   Stream<PhoneStatus>? _stream;
 
   /// Status pushes. Listen only after [status] came back ready: activating the
-  /// stream without a native side reports an error to Flutter.
-  Stream<PhoneStatus> get statusChanges => _stream ??= _events
-      .receiveBroadcastStream()
-      .where((raw) => raw is Map)
-      .map((raw) => PhoneStatus.fromMap((raw as Map).cast<Object?, Object?>()))
-      .asBroadcastStream();
+  /// stream without a native side reports an error to Flutter. Empty where the
+  /// device has no phone control at all.
+  Stream<PhoneStatus> get statusChanges {
+    if (!PlatformCapabilities.phoneControl) return Stream<PhoneStatus>.empty();
+    return _stream ??= _events
+        .receiveBroadcastStream()
+        .where((raw) => raw is Map)
+        .map((raw) => PhoneStatus.fromMap((raw as Map).cast<Object?, Object?>()))
+        .asBroadcastStream();
+  }
 
   Future<PhoneStatus> status() async {
     try {

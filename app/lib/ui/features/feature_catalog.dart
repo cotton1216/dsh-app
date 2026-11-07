@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../l10n/l10n.dart';
+import '../../platform_capabilities.dart';
 import '../../plugins/native/native_icons.dart';
 import '../../plugins/native/native_state.dart';
 import '../../plugins/seams/seams.dart';
@@ -185,7 +186,15 @@ const settingsFeatureSection = 'settings';
 
 /// What 全部功能 holds: things to do now. Settings live in 设置; the last
 /// group is a few shortcuts there (docs/design/settings-ia.md §4.6).
-final featureSections = <FeatureSection>[
+///
+/// Cached per device kind: the catalog is read as one list (providers compare
+/// it by identity), while 手机操控 only belongs on a device that has it.
+List<FeatureSection> get featureSections =>
+    _sectionsByPhoneControl[PlatformCapabilities.phoneControl] ??= _buildSections();
+
+final _sectionsByPhoneControl = <bool, List<FeatureSection>>{};
+
+List<FeatureSection> _buildSections() => <FeatureSection>[
   FeatureSection.localized((l10n) => l10n.catalogCurrentChat, [
     FeatureItem.localized(
       id: 'session-detail',
@@ -398,14 +407,15 @@ final featureSections = <FeatureSection>[
       icon: AppIcons.permissions,
       native: (id) => PermissionPage(sessionId: id),
     ),
-    FeatureItem.localized(
-      id: 'phone',
-      title: (l10n) => l10n.catalogPhoneControl,
-      summary: (l10n) => l10n.catalogPhoneControlSummary,
-      icon: AppIcons.phoneControl,
-      tile: FeatureKind.phone,
-      native: (_) => const PhoneControlScreen(),
-    ),
+    if (PlatformCapabilities.phoneControl)
+      FeatureItem.localized(
+        id: 'phone',
+        title: (l10n) => l10n.catalogPhoneControl,
+        summary: (l10n) => l10n.catalogPhoneControlSummary,
+        icon: AppIcons.phoneControl,
+        tile: FeatureKind.phone,
+        native: (_) => const PhoneControlScreen(),
+      ),
     FeatureItem.localized(
       id: 'remote',
       title: (l10n) => l10n.commonRemoteHost,

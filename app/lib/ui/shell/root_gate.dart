@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../launch/launch_state.dart';
+import '../../platform_capabilities.dart';
 import '../../runtime/local_footprint.dart';
 import '../../diagnostics/diagnostics_publish.dart';
 import '../../runtime/runtime_bridge.dart';
@@ -280,6 +281,18 @@ class _RootGateState extends ConsumerState<RootGate> {
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
+    if (!PlatformCapabilities.localRuntime) {
+      // local 在远程客户端中只表示尚未选择主机，不连接或启动本机。
+      final host = ref.watch(activeHostProvider);
+      if (!settings.loaded) return const _Splash();
+      if (!_launchReady) {
+        _launchReady = true;
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => LaunchController.active.value?.ready(waitsForEngine: false),
+        );
+      }
+      return host.isLocal ? const RemoteScreen() : UsageUpgradeNotice(child: widget.home ?? const ModeHome());
+    }
     final runtime = ref.watch(localRuntimeProvider.select((s) => (status: s.status, loaded: s.loaded)));
     final prefs = ref.watch(onboardingPrefsProvider);
     // The last host comes back while the splash shows, so a phone without

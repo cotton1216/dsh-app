@@ -4,6 +4,7 @@ import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../l10n/l10n.dart';
+import '../platform_capabilities.dart';
 import '../remote/link_status.dart';
 import '../remote/network_watch.dart';
 import '../remote/relay/relay_backend.dart';
@@ -62,6 +63,7 @@ final localClientConnectorProvider = Provider<LocalClientConnector>(
 class LocalConnectionController extends AsyncNotifier<HostConnection?> {
   @override
   Future<HostConnection?> build() async {
+    if (!PlatformCapabilities.localRuntime) return null;
     // This build's ref: `ref` always points at the newest build, so only
     // `r.mounted` tells that a token change superseded this one.
     final r = ref;
