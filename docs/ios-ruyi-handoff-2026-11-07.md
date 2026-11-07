@@ -12,7 +12,7 @@
 4. 本次通过两个 Dart 客户端验证了同后端的实时用户消息、助手消息及正常 turn 完成。没有自动点击桌面如意窗口确认视觉刷新。
 5. **当前模拟器安装的是 `lib/dev/desktop_attach_preview.dart` 验证入口，不是 `lib/main.dart` 正式入口。它直接通过同机 Unix socket 配对，再走回环 HTTP/WebSocket；没有经过 SSH。**
 6. 正常 App 已增加 SSH `attach` 模式及界面，相关单测通过；真实 iPhone 的 SSH 配对、签名安装、后台恢复尚未验收。
-7. 改动已提交到本地分支 `ios-ruyi-handoff`（`git log -1` 可查哈希）。是否推送、推到哪个远端由用户决定；未推送前上游 `main` 不含本功能，不能只给原仓库地址。
+7. 改动已提交到 `ios-ruyi-handoff` 并推送到内网 GitLab（详见 0.1）。**`main` 仍是基线 `d44f960`，不含本功能；上游 GitHub 仓库也未收到本功能。**
 8. **运行截图见 9.5 节**（`docs/assets/ios-ruyi/`）：iOS 原生界面接入、真实回复、如意桌面端会话列表、配对失败页。桌面端原图含真实姓名与个人对话，**已裁切，未入库**。
 8. 本文不包含 API Key、启动 token、Cookie、SSH 私钥。禁止把这些内容加入交接文档、普通日志或 Git。
 
@@ -20,50 +20,50 @@
 
 | 项目 | 值 |
 |---|---|
-| 远端仓库 | `https://github.com/ccch1mneyyy/dsh-Go.git` |
-| 默认分支 | `main` |
-| 本机基线提交 | `d44f9607b69bc284a733e554805f283b30471e7a`（2026-11-02，`Merge pull request #312 ...`） |
-| 改动提交位置 | 本地分支 `ios-ruyi-handoff`；具体哈希用 `git log -1` 查看 |
-| 是否已推送 | 以交付方告知为准；未推送前上游 `main` 不含本功能 |
-| 备用移交补丁 | `docs/ios-ruyi-handoff-2026-11-07.patch`，约 200 KB，80 个文件（不入 git，单独提供） |
-| 完整性校验 | 移交方在交付时告知 SHA-256；接收方用 `shasum -a 256` 自行比对 |
+| 交付仓库（内网 GitLab） | `ssh://git@10.10.117.12:2222/xxt/ai-server/ai-ruyi-app.git` |
+| Web 界面 | `http://10.10.117.12:8888/xxt/ai-server/ai-ruyi-app` |
+| 上游原仓库 | `https://github.com/ccch1mneyyy/dsh-Go.git`（本功能未推送到此） |
+| 基线提交 | `d44f9607b69bc284a733e554805f283b30471e7a`（2026-11-02） |
+| `main` 分支 | 等于基线 `d44f960`，**不含本功能** |
+| 功能分支 | `ios-ruyi-handoff`，已推送，含全部改动 |
+| 主机指纹 | `[10.10.117.12]:2222` ED25519 `SHA256:fCaX/c8Cf3t86XqUAm/o2OMwJ10ccB8DGdKtRlG3T3E` |
+| 备用移交补丁 | `docs/ios-ruyi-handoff-2026-11-07.patch`，约 1.5 MB，84 个文件（不入 git） |
+| 完整性校验 | 移交方在交付时告知 SHA-256；接收方用 `shasum -a 256` 比对 |
 
-补丁的 SHA 不在本文件内写死：文档本身也在补丁里，写死会让每次重新生成都对不上。
+**注意到这一点：`main` 是基线，功能在 `ios-ruyi-handoff`。** 直接 clone `main` 拿不到本功能。
 
-**只 clone 仓库 `main` 会拿到旧代码（`d44f960`），不包含本功能。**
+## 0.2 取得代码
 
-取得代码有两条路，按交付时的实际情况选一条：
+优先用功能分支：
 
-- **优先：直接拿包含本功能的提交或分支。** 本地已在本分支提交，仓库同步后 clone 即可，不需要补丁。
-- **备用：离线补丁。** 若只能拿到 upstream `main`，再用下面的补丁应用；补丁是未提交改动的快照，与提交内容等价。
+```bash
+git clone ssh://git@10.10.117.12:2222/xxt/ai-server/ai-ruyi-app.git
+cd ai-ruyi-app
+git switch ios-ruyi-handoff
+git log -1 --oneline            # 应为 docs: add iOS and desktop run screenshots
+git status --short              # 应为空
+```
 
-在目标终端按以下顺序操作：
+若网络访问不了内网 GitLab，才用离线补丁（以基线为父提交生成）：
 
 ```bash
 git clone https://github.com/ccch1mneyyy/dsh-Go.git
 cd dsh-Go
-git log -1 --format=%H          # 应为 d44f9607...；若 main 已前进，先确认补丁能否干净应用
-git apply --check docs/ios-ruyi-handoff-2026-11-07.patch   # 仅检查，不改文件
-git apply docs/ios-ruyi-handoff-2026-11-07.patch
-git status --short              # 应出现新增的 iOS 工程、插件、dev 入口、探针、测试
+git checkout d44f9607b69bc284a733e554805f283b30471e7a
+git apply --check /path/to/ios-ruyi-handoff-2026-11-07.patch   # 仅检查
+git apply /path/to/ios-ruyi-handoff-2026-11-07.patch
 ```
 
-说明：
+补丁说明：
 
-- 补丁以本机基线为父提交生成。若上游 `main` 已前进导致冲突，先确认冲突文件归属，再手工合并；**不要用 `git apply --3way` 强推后再声称验证通过**，也**不要 `git checkout -- .` 丢弃**。
-- 补丁不含 `app/ios/Pods`（约 1 GB）、`build/`、`.dart_tool/`、`.workbuddy/` 与任何凭据；这些应在目标机由 `flutter pub get`、`pod install` 重新生成。
-- 补丁包含 `app/ios/` 工程源文件（约 244 KB、53 个文件），这是仓库原先缺失的 iOS 平台工程。
-- `docs/ios-ruyi-handoff-2026-11-07.md` 本身也在补丁中，所以应用后本文档仍然存在。
-- 补丁只用于「拿不到本功能提交」的场景；补丁文件本身不入 git，避免与提交内容重复。
-- 应用后在目标机自建一次本地提交，便于回滚：
+- 补丁与 `d44f960..ios-ruyi-handoff` 等价，已在本机干净克隆上验证可应用。
+- 不含 `app/ios/Pods`（约 1 GB）、`build/`、`.dart_tool/`、`.workbuddy/` 与任何凭据；这些在目标机由 `flutter pub get`、`pod install` 重新生成。
+- 含 `app/ios/` 工程源文件（53 个），这是仓库原先缺失的 iOS 平台工程。
+- 含 `docs/assets/ios-ruyi/` 的 4 张运行截图。
+- 补丁文件本身**不入 git**，避免与提交内容重复。
+- 若上游 `main` 已前进导致冲突，先确认冲突文件归属再手工合并；**不要 `git apply --3way` 强推后声称验证通过**，也不要 `git checkout -- .` 丢弃改动。
 
-```bash
-git switch -c ios-ruyi-local
-git add -A -- app/ios app/lib app/tool app/test app/integration_test app/pubspec.yaml app/pubspec.lock app/.metadata app/analysis_options.yaml runtime docs
-git commit -m "wip: iOS remote client and Ruyi same-host attach"
-```
-
-是否 push、推到哪个远端由用户决定；不要未经要求推送到上游 `main`。
+`main` 是否要合并本功能（发 MR）由用户和评审决定；不要未经要求把功能分支合进 `main` 或推送到上游 GitHub 仓库。
 
 **不要移交的内容**：`~/.xianxingtong`（用户数据与凭据）、`~/.dsh`、SSH 私钥、任何启动 token/Cookie、`app/build`、`app/.dart_tool`、`app/ios/Pods`。
 
@@ -598,7 +598,7 @@ git -C "$REPO" diff --check
 - 需要核对同后端下插件/MCP/工具能力和缺少dsh-go bridge的降级行为；基础聊天通过不代表所有插件兼容。
 - iOS真机签名、后台重连、网络切换、发布流程未做。
 - 桌面窗口视觉实时刷新未自动验收；本次证明的是同一Host与两个客户端事件同步。
-- 已本地提交但未推送；推送目标与是否合并到上游仍由用户决定。
+- 已推送功能分支到内网 GitLab；是否发 MR 合进 `main`、是否同步到上游 GitHub，仍由用户与评审决定。
 
 ## 14. 给下一位智能体的简短执行指令
 
