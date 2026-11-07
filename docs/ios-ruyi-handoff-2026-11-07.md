@@ -20,8 +20,9 @@
 
 | 项目 | 值 |
 |---|---|
-| 交付仓库（内网 GitLab） | `ssh://git@10.10.117.12:2222/xxt/ai-server/ai-ruyi-app.git` |
+| 交付仓库 A（内网 GitLab） | `ssh://git@10.10.117.12:2222/xxt/ai-server/ai-ruyi-app.git` |
 | Web 界面 | `http://10.10.117.12:8888/xxt/ai-server/ai-ruyi-app` |
+| 交付仓库 B（GitHub） | `git@github.com:cotton1216/dsh-app.git` |
 | 上游原仓库 | `https://github.com/ccch1mneyyy/dsh-Go.git`（本功能未推送到此） |
 | 基线提交 | `d44f9607b69bc284a733e554805f283b30471e7a`（2026-11-02） |
 | `main` 分支 | 等于基线 `d44f960`，**不含本功能** |
