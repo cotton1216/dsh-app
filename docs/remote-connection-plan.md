@@ -913,3 +913,130 @@ user         = { id, username, email, balance, frozen_balance, total_recharged }
 
 **「中继多账号登录」要实现，但不必现在从头改**：单账号是上游的明确设计，不是配置遗漏。最省事的是先一人一实例（零改代码），确认团队用法后再决定要不要 fork 成多账号；客户端在这两种方案下都不用改。
 
+## 17. 下一阶段计划（2026-11-07 定）
+
+按「先验证用法、再投入改造」的顺序，每阶段都有可独立验收的产出。
+
+### 17.1 阶段 1：一人一实例（本周内，零改代码）
+
+| 项 | 内容 |
+|---|---|
+| 做什么 | 在 `118.196.18.181` 再起一个容器 + 独立数据卷 + 独立账号，给 1 位同事使用 |
+| 地址怎么给 | 现有 443 已归你的实例；新实例二选一：① 新端口（如 8443，需在安全组放行）② 子域名（需 DNS + 证书） |
+| 验收标准 | 同事用自己的账号登录，**只看到自己的机器**；看不到、也连不上你的 `XBB-4.local` |
+| 成本 | 约 30 分钟运维，无代码改动 |
+| 风险 | 端口/证书数量随人数线性增长；升级要逐个容器滚动 |
+
+**为什么要先做这一步**：多账号的真实需求（谁能连谁的机器、是否要跨人协作）还没被验证过。先用最小成本跑一轮，避免照着假设去改架构。
+
+### 17.2 阶段 2：中继源码集成 + 多账号（视阶段 1 结论决定）
+
+两种进入方式，选一个：
+
+- **2a. 外部 fork**：fork 上游 `liguobao/ds-harness-remote`，改多账号（§16.5），自己出镜像。
+- **2b. 并入自有仓库**：把 `apps/server` + `packages/protocol` 收进如意客户端源码树（§18.2），在同一仓库里改。
+
+| 项 | 内容 |
+|---|---|
+| 验收标准 | ① 两个账号各自只看自己的设备；② 跨账号连接被拒（有测试用例）；③ 吊销单个设备后该设备立即掉线；④ 原有单账号数据可平滑迁移 |
+| 成本 | 3–5 人日 MVP + 回归上线约 1 周 |
+| 风险 | 与上游长期分叉；后续上游升级要手工合并 |
+
+### 17.3 阶段 3：企业化配套（暂不排期）
+
+设备吊销面板、审计日志、账号接公司 IAM/SSO（§13 的硬阻塞是 IAM 无 token 校验接口）、监控告警、备份与恢复演练。
+
+## 18. 工作空间迁移与中继源码集成
+
+### 18.1 把仓库移到 `MVP-Server-Demo` 下
+
+当前路径 `/Users/binny/workspace-sdd/dsh-Go`，计划移到 `<MVP-Server-Demo>/dsh-Go`。
+**本机尚未找到 `MVP-Server-Demo` 目录**（`/Users/binny`、`/Volumes` 深度 6 内无匹配），迁移前需先确认目标路径。
+
+迁移本身对 git 无影响：remote 是 URL，提交历史与两个远端（`xxt`、`dshapp`）都不依赖本地绝对路径。
+
+**但有一个必须同步改的地方**——如意加载配对插件的路径写死在 profile 里：
+
+```yaml
+# ~/.xianxingtong/profiles/desktop/cordis.patch.yml:300
+name: /Users/binny/workspace-sdd/dsh-Go/runtime/bridge/desktop-pairing.mjs
+```
+
+搬家后不改这一行，**如意下次重启就加载不到插件**（当前运行中的实例不受影响，因为已加载到内存，容易造成"看起来没事"的误判）。
+
+两种处理，推荐第二种：
+
+```bash
+# 方案一：跟着改路径（简单，但仍然依赖工作区路径）
+sed -i '' 's#/Users/binny/workspace-sdd/dsh-Go#<新前缀>#g' \
+  ~/.xianxingtong/profiles/desktop/cordis.patch.yml
+
+# 方案二：把插件放到稳定位置，配置只认这个位置（推荐）
+mkdir -p ~/.xianxingtong/phone-pairing
+cp runtime/bridge/desktop-pairing.mjs ~/.xianxingtong/phone-pairing/desktop-pairing.mjs
+# 再把 cordis.patch.yml 里的 name 改成上面这个路径
+```
+
+方案二之后，仓库可以随便挪，插件不受影响；代价是改代码后要重新复制一次（或改成软链接）。
+
+**本机已按方案二执行**（2026-11-07 14:05）：
+
+- 插件副本：`~/.xianxingtong/phone-pairing/desktop-pairing.mjs`（与仓库版本逐字节一致，`node --check` 通过）
+- `cordis.patch.yml` 的 `insert.dsh-go-desktop-pairing.name` 已指向该路径，YAML 校验通过（18 个条目）
+- 改前备份：`cordis.patch.before-plugin-path.yml`
+- **注意**：运行中的如意仍用内存里的旧文件，新路径要等如意下次重启才真正生效；届时若面板消失，先看这一行路径是否存在。
+
+**其余迁移步骤**：
+
+1. 迁移前确认工作区干净：`git status --short`（当前只剩 `.workbuddy/` 与 `docs/ios-ruyi-handoff-2026-11-07.patch` 未跟踪，二者都不入 git）。
+2. `mv /Users/binny/workspace-sdd/dsh-Go <目标>/dsh-Go`。
+3. 更新如意 profile 的插件路径（见上）。
+4. Flutter 构建缓存里带旧绝对路径（`app/build`、`app/.dart_tool`、`app/ios/Flutter/flutter_export_environment.sh`），建议在新位置重建：
+
+```bash
+cd <新路径>/app && flutter clean && flutter pub get && \
+  cd ios && pod install && cd .. && flutter build ios --simulator --debug
+```
+
+5. 验证顺序：① 重启如意 → 看 Remote 面板是否仍在、Host 是否上线；② 装 App 连中继 → 看到 `XBB-4.local`；③ 跑 `flutter test test/remote/hosts_state_test.dart`。
+6. **不要**在迁移时删除 `.workbuddy/`（项目记忆在里面）。
+
+### 18.2 把中继服务源码并进如意客户端源码树
+
+你的想法（把中继源码集成进如意客户端源码）在技术上成立，而且**是走多账号路线的必要前提**——否则只能一直依赖外部 fork。
+
+**要拿哪些目录**（上游 `liguobao/ds-harness-remote`，MIT）：
+
+| 目录 | 作用 | 是否必需 |
+|---|---|---|
+| `apps/server` | 中继服务端（Node 22 + TypeScript） | ✅ |
+| `packages/protocol` | 客户端/服务端共用的协议包，server 构建时强依赖 | ✅ |
+| `packages/plugin` | 如意侧的 Host 插件（`ds-harness-remote` npm 包） | 可选，改造时要一起升级 |
+| `apps/server/web` | Web 登录页/设备页 | 可选，不集成则用自己的页面 |
+
+**建议布局**（保持与上游同构，便于日后 rebase）：
+
+```text
+<如意客户端仓库>/
+  relay/
+    server/        # ← apps/server
+    protocol/      # ← packages/protocol
+    plugin/        # ← packages/plugin（可选）
+  pnpm-workspace.yaml
+```
+
+**构建链**：`pnpm install` → `pnpm --filter @dsh-remote/protocol build` → `pnpm --filter @dsh-remote/server build` → `node dist/main.js`（Node 22）。镜像里 `DSH_SERVER_DATA_FILE` 默认 `/data/state.json`，自托管时记得挂持久卷。
+
+**收益**：
+
+- 可以在同一仓库里做多账号改造（§16.5），不用维护独立 fork。
+- 中继版本与客户端发版节奏对齐，避免"插件 0.6.x 配服务端 0.5.x"的错配。
+- 未来若要内嵌到如意发布包或私有部署流程，源码在手最省事。
+
+**代价与注意**：
+
+- 仓库语言栈变混合（Electron/Node + TypeScript 服务端），需要 `pnpm-workspace` 管理两套依赖。
+- 上游仍在演进（WebRTC、Remote Web），集成后**每次同步上游都要手工合并**；建议保留 `upstream` 远程并定期 `git fetch upstream` 看差异。
+- 许可证是 MIT，保留版权声明即可商用。
+- 这是"把中继代码放进自己的代码库"，**不是修改如意安装包**——如意本体仍是闭源分发，Host 插件仍以插件形式加载。
+
