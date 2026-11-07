@@ -52,9 +52,10 @@ class _SelfHostedLoginSheetState extends ConsumerState<SelfHostedLoginSheet> {
       _error = null;
     });
     try {
-      await ref
-          .read(relayServerProvider.notifier)
-          .loginWithPassword(server: _server.text, email: _email.text, password: _password.text);
+      // Two steps on purpose: the backend provider watches the server, so the
+      // server controller must not reach for the backend itself.
+      await ref.read(relayServerProvider.notifier).setServer(_server.text);
+      await ref.read(relayAccountProvider.notifier).signInWithPassword(_email.text, _password.text);
       if (mounted) Navigator.of(context).pop();
     } on HostLinkError catch (e) {
       if (mounted) setState(() => _error = e.message);

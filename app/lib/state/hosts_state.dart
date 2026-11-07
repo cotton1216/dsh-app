@@ -360,14 +360,14 @@ class RelayServerController extends Notifier<String?> {
     ref.invalidate(relayAccountProvider);
   }
 
-  /// Switches to [server] (normalized; throws [HostLinkError] when invalid)
-  /// and signs in there with email + password.
-  Future<void> loginWithPassword({required String server, required String email, required String password}) async {
+  /// Switches to [server] (normalized; throws [HostLinkError] when invalid).
+  ///
+  /// Signing in is the account controller's job: reading the backend from here
+  /// would close a dependency cycle, because that provider watches this one.
+  Future<void> setServer(String server) async {
     ref.read(readListCredentialEpochProvider.notifier).advance();
     final origin = DshRemoteRelayBackend.normalizeServer(server);
     await _set(origin == defaultRelayServer ? null : origin);
-    await ref.read(relayBackendProvider).loginWithPassword(email.trim(), password);
-    ref.invalidate(relayAccountProvider);
   }
 }
 
@@ -581,6 +581,17 @@ class RelayAccountController extends AsyncNotifier<RelayAccountState> {
   void cancelLogin() {
     _cancelPendingLogin();
     state = AsyncData(_now.copyWith(loggingIn: false, loginUrl: () => null));
+  }
+
+  /// Signs in to the currently selected server with email + password. The
+  /// caller switches servers first through [RelayServerController.setServer],
+  /// so this never reads a provider that depends on the caller.
+  Future<void> signInWithPassword(String email, String password) async {
+    final backend = _backend;
+    ref.read(readListCredentialEpochProvider.notifier).advance();
+    await backend.loginWithPassword(email.trim(), password);
+    ref.invalidateSelf();
+    await future;
   }
 
   Future<void> logout() async {
