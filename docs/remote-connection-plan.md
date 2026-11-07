@@ -154,9 +154,90 @@ enabled = True
 | 插件自带 81 个依赖 | profile 依赖树变复杂 | 已 `saveExact` 锁定版本 |
 | 移动端与桌面端同会话并发 | 写冲突 | 不同时对同一会话发消息 |
 
-## 9. 未验证项（不要当成已通过）
+## 9. 自建服务器验证记录（局域网，2026-11-07）
+
+### 9.1 部署形态
+
+局域网自建，服务跑在 Mac 本机 Docker，手机或模拟器需同一 Wi-Fi。
+
+| 项目 | 值 |
+|---|---|
+| 目录 | `~/dsh-relay/` |
+| 镜像 | `ghcr.io/liguobao/ds-harness-remote/server:latest` |
+| 端口 | 宿主 8090 → 容器 8080（8080 被本机 java 进程占用） |
+| 平台 | `linux/amd64`（**镜像无 arm64 版本**，Apple Silicon 需 Rosetta 模拟） |
+| 账号 | 在 `docker-compose.yml` 的 `DSH_SERVER_ACCOUNT` |
+| 密码 | 同文件 `DSH_SERVER_PASSWORD`；文件权限 600，不写入文档与日志 |
+| 数据 | 命名卷 `dsh-relay_server-data` |
+| 自启 | `restart: unless-stopped` |
+
+`DSH_SERVER_PUBLIC_URL` 必须写成局域网可访问地址 `http://<内网IP>:8090`，不能写 `127.0.0.1`，否则手机端页面白屏。
+
+### 9.2 如意侧配置
+
+在 `~/.xianxingtong/profiles/desktop/cordis.patch.yml` 追加覆盖条目：
+
+```yaml
+- id: ds-harness-remote
+  name: ds-harness-remote
+  config:
+    enabled: true
+    role: host
+    serverUrl: http://192.168.1.6:8090
+    codex:
+      enabled: true
+      binary: codex
+```
+
+修改前备份：`cordis.patch.before-selfhost.yml`。
+
+注意：覆盖 `config` 后运行中的实例不会立刻改地址，需在界面重开远程面板，或重启如意。
+
+### 9.3 实测结果（全部通过）
+
+服务端日志：
+
+```
+ws_hello_authenticated
+  deviceId: 01a1b41e-...   role: host   clientVersion: 0.6.3
+  capabilities: [transport.lan, transport.p2p, transport.relay]
+```
+
+客户端库（`packages/dsh_remote`）完整链路：
+
+```
+LOGIN ok  provider=password
+HOSTS count=1
+  - name=XBB-4.local online=true platform=darwin
+    harness=0.2.2-rc.1 plugin=0.6.3 trust=unpinned
+state=connecting → connected  transport=relay
+CONNECTED sessions=8
+  小通 / 今天星期几 / 手机双端连接验证 ...
+```
+
+结论：**账号登录 → 发现设备 → 建立加密连接 → 拉取会话，全链路可用**，且 Host 是如意本进程，不是另起的引擎。
+
+### 9.4 部署时踩到的坑
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `no matching manifest for linux/arm64/v8` | 官方镜像只发布 amd64 | compose 里加 `platform: linux/amd64`，走 Rosetta |
+| 8080 起不来 | 本机 java 进程占用 8080 | 宿主端口改 8090 |
+| Docker 未运行 | Docker Desktop 没启动 | `open -a Docker` 后等 daemon 就绪 |
+| 改了 YAML 但插件仍连旧地址 | 运行中实例读的是启动时配置 | 界面重开面板，或重启如意 |
+| 手机打开白屏 | `PUBLIC_URL` 写成 127.0.0.1 | 改成局域网 IP |
+
+### 9.5 这套部署的边界
+
+- **只在同一局域网可用**。手机出门后 `192.168.1.6` 不可达，需要公网部署（见第 5 节形态②）。
+- Rosetta 模拟有性能损耗，但不是瓶颈（服务本身很轻）。
+- 单账号：所有设备共用一个账号，无多用户隔离。
+- 本轮**未验证手机 App 的界面流程**，只用客户端库验证了链路；真机与 UI 仍待验证。
+
+## 10. 未验证项（不要当成已通过）
 
 - 真实 iPhone 上的 relay 连接（iOS 尚未做过任何真机验证）。
-- WebRTC 直连（LAN/P2P/TURN）在 iOS 的表现。
+- 手机 App 界面里完成登录与连接的完整交互（本轮只验到客户端库层）。
+- WebRTC 直连（LAN/P2P/TURN）在 iOS 的表现；本轮实际走的是 relay。
 - 如意升级后的插件兼容性。
-- 自建服务器的完整流程。
+- 公网部署 + HTTPS 反代 + TURN 的完整流程。
