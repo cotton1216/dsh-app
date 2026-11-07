@@ -1,7 +1,7 @@
 # 远程连接方案对比与选型（iOS 客户端接入如意）
 
 - 更新时间：2026-11-07
-- 状态：**方案已定，C（relay 账号登录）已完成可行性与安装验证，登录环节待人工完成**
+- 状态：**方案已定，C（relay 账号登录）已完成可行性与安装验证；下一步为「账号适配 IAM（须支持扫码 + 账号密码两种登录）+ 固化中继地址」。中继 Server 二开可行性已核实（§12）：MIT 可改，但需把单账号模型改成多账号。手机端方案见 §13：**手机无需登录 IAM，走桌面授权码绑定（M1）为主，自身登录 IAM（M2）兜底；硬阻塞是 IAM 需提供 token 验证接口****
 - 读者：接手本仓库的智能体、开发者
 - 相关：`docs/ios-ruyi-handoff-2026-11-07.md`（iOS 适配与同后端连接的实施记录）
 
@@ -234,6 +234,97 @@ CONNECTED sessions=8
 - 单账号：所有设备共用一个账号，无多用户隔离。
 - 本轮**未验证手机 App 的界面流程**，只用客户端库验证了链路；真机与 UI 仍待验证。
 
+## 10. 公网服务器 IP + HTTPS 实施记录（2026-11-07）
+
+目标服务器：`118.196.18.181`（Ubuntu 24.04 / x86_64，Docker 29.1.3，Nginx 1.24）。
+该机已有在跑的业务站点 `vastudio.thchengtay.com`，本实施**未改动**其配置与证书。
+
+### 10.1 为什么可以用 IP 而不买域名
+
+Let's Encrypt 自 2026-01 起正式签发 IP 证书（IPv4/IPv6），但有两个硬约束：
+
+- **必须是 shortlived 配置档，有效期 160 小时（约 6 天）**，续期必须全自动。
+- 验证只支持 HTTP-01 / TLS-ALPN-01，且必须打到该 IP 的 80 或 443。
+
+客户端要求 Certbot ≥ 5.4（`--ip-address` 自 5.3 起，webroot 支持自 5.4 起）。
+服务器自带的 2.9.0 不满足，且 `python3.12-venv` 未安装，因此采用 **pip --target 隔离安装**：
+
+```bash
+mkdir -p /root/.certbot-ip
+python3 -m pip install --index-url https://pypi.org/simple --target /root/.certbot-ip "certbot==5.9.0"
+```
+
+注意：该机 pip 默认指向内网镜像，镜像里只有 5.2.2，必须显式 `--index-url https://pypi.org/simple`。
+
+### 10.2 签发（与系统证书完全隔离）
+
+```bash
+export PYTHONPATH=/root/.certbot-ip
+B=/root/.certbot-ip/bin/certbot
+CFG="--config-dir /root/.certbot-ip/config --work-dir /root/.certbot-ip/work --logs-dir /root/.certbot-ip/logs"
+
+# 先用 staging 验证
+$B certonly --staging --preferred-profile shortlived --webroot   --webroot-path /var/www/certbot --ip-address 118.196.18.181   --non-interactive --agree-tos --register-unsafely-without-email $CFG
+
+# 正式签发（已有同标识证书时需先 delete，否则报 "not yet due for renewal"）
+$B delete --cert-name 118.196.18.181 --non-interactive $CFG
+$B certonly --preferred-profile shortlived --webroot   --webroot-path /var/www/certbot --ip-address 118.196.18.181   --non-interactive --agree-tos --register-unsafely-without-email $CFG
+```
+
+结果：`SAN = IP Address:118.196.18.181`，签发者 `Let's Encrypt YE1`，链 4 段，`openssl verify` 通过。
+证书落在 `/root/.certbot-ip/config/live/118.196.18.181/`，**未触碰 `/etc/letsencrypt`**。
+
+ACME 验证复用现有站点的 80 端口规则（`/.well-known/acme-challenge/` → `/var/www/certbot`），**无需改 Nginx**。
+
+### 10.3 自动续期
+
+6 天证书必须高频续期，已配置：
+
+```text
+/etc/cron.d/certbot-ip      每天 03:17 / 15:17 执行 renew
+/root/.certbot-ip/deploy-hook.sh   先 nginx -t 再 systemctl reload nginx
+```
+
+`certbot renew --dry-run --run-deploy-hooks` 演练通过，钩子实际执行并写入
+`/root/.certbot-ip/deploy.log`。
+
+### 10.4 Nginx 挂载
+
+新增 `sites-available/dsh-remote-ip.conf`，软链为
+`sites-enabled/zz-dsh-remote-ip.conf`（**zz- 前缀保证排在现有站点之后**）。
+
+关键坑：
+
+1. `nginx.conf` 里 `conf.d/*.conf` **先于** `sites-enabled/*` 加载，配置放 conf.d 会抢走默认站点。
+2. **客户端访问纯 IP 时不发送 SNI**，Nginx 只能落到 `default_server`。因此 IP 站点必须显式
+   `listen 443 ssl http2 default_server;`，否则永远返回域名站的证书，报
+   `no alternative certificate subject name matches target ipv4 address`。
+3. 域名站靠 `server_name` 匹配 SNI，**不受** default_server 影响。
+
+实测：
+
+| 目标 | 结果 |
+|---|---|
+| `https://118.196.18.181/healthz` | 200，`verify=0`，返回 `ok` |
+| `https://vastudio.thchengtay.com/` | 200，`verify=0`，证书仍是原生产证书（至 2027-01-04） |
+
+### 10.5 该机的宝塔（BT Panel）评估
+
+结论：**不建议在本机直接安装**。
+
+- 系统与资源满足（Ubuntu 24.04、31G 内存、24G 空闲盘）。
+- 但宝塔官方要求「服务器上未安装任何 Web 环境，为纯净系统」。本机已有 apt 版 Nginx 在服务
+  真实业务站点，另有 PostgreSQL、Redis 与 3 个 Docker 容器，80/443 已被占用。
+- 宝塔会安装自己的 `/www` 与 Nginx 并接管 80/443，有搞挂现有站点的实质风险。
+
+若确实要用宝塔，应另开一台干净服务器，或先做快照与完整备份并接受接管现有 Nginx 的代价。
+
+### 10.6 尚未完成
+
+- 中继服务本体尚未部署；当前 `https://118.196.18.181` 只返回占位响应。
+- 未配置 WebSocket 反代（`/ws/v1/connect`，idle timeout 需 > 75 秒）。
+- 如意与手机端仍指向家中局域网中继 `192.168.1.6:8090`。
+
 ## 10. 未验证项（不要当成已通过）
 
 - 真实 iPhone 上的 relay 连接（iOS 尚未做过任何真机验证）。
@@ -241,3 +332,358 @@ CONNECTED sessions=8
 - WebRTC 直连（LAN/P2P/TURN）在 iOS 的表现；本轮实际走的是 relay。
 - 如意升级后的插件兼容性。
 - 公网部署 + HTTPS 反代 + TURN 的完整流程。
+
+## 11. 下一步（2026-11-07 记录，未开始实现）
+
+远程通道在链路上已跑通，但**账号和地址两件事还是临时的**，需要收口成正式形态。以下为待办，不含已完成工作。
+
+### 11.1 待办 A：账号适配 IAM
+
+**现状问题**：当前用的是 ds-harness-remote 自带的账号体系，与公司/项目其他系统不互通。
+
+| 项 | 现状 |
+|---|---|
+| 登录提供方 | ds-harness-remote 自己的 provider 列表（`password` / `github` / `zhihu` / `google`），由 `server_api.oauthProviders()` 动态返回 |
+| 凭据 | 各 Server 独立一套账号，`DSH_SERVER_ACCOUNT` / `DSH_SERVER_PASSWORD`；**每个 server 各自登录** |
+| 客户端存的是 | `deviceToken` + `refreshToken`（`RemoteAccount` + `secret_store`），绑定 `serverUrl.origin` 的 hash 作用域 |
+| 与 IAM 的关系 | **无**，目前完全是另一套身份 |
+
+**目标**：登录走 IAM，一套账号通用；不再维护独立的中继账号。
+
+#### 11.1.1 登录方式要求（硬性）
+
+适配 IAM 之后，客户端必须**同时**保留下面三种入口，不能只留一种：
+
+| 方式 | 要求 | 现状 |
+|---|---|---|
+| **扫码登录** | App 内展示二维码供其他已登录设备扫；或 App 扫网页端的码完成授权 | ⚠️ 半成品：库层有 QR 会话（`RemoteAccount.startLogin` → `api.startQrLogin`，轮询 `scanUrl`），但 **App 只是把该链接丢给浏览器打开**（`_Waiting`），界面上没有二维码，扫码动作发生在浏览器里 |
+| **账号密码登录** | App 内直接输入账号 + 密码，不跳浏览器 | ⚠️ 只在「自建服务器」高级选项（`SelfHostedLoginSheet`）里有，且强制先填服务器地址；正式入口没有 |
+| 浏览器 OAuth 兜底 | IAM 若支持第三方身份，仍可作为补充 | ✅ 现有主路径（`remote_browser_sign_in`） |
+
+**扫码登录的具体形态需要定**——两种都叫"扫码"，实现和适用场景完全不同：
+
+| 形态 | 谁显示码 | 谁扫 | 适用场景 |
+|---|---|---|---|
+| **A. App 显示码** | 手机 App | 另一台已登录设备 | 多设备加登、换手机时确认身份 |
+| **B. App 扫码** | 桌面端（如意远程面板）或网页 | 手机 App 相机 | **本项目的真实场景**：手机连自己的电脑 |
+
+**倾向**：单独实现 B 需要新增相机权限与二维码解析依赖（现有依赖里没有扫码组件），成本不低；而 **A3 内嵌 IAM 登录页天然覆盖 B**——IAM 登录页里本来就有"手机扫页面上的码"这条路，客户端不用碰相机。所以形态选择应跟路径选择一起定，不要先拆开做。
+
+**密码登录的注意点**：密码不落盘、不进日志；`secret_store` 只存 token。现有 `SelfHostedLoginSheet` 已经这么做了，复用即可。
+
+#### 11.1.2 候选路径（含对登录方式的影响）
+
+| 路径 | 做法 | 扫码 | 密码 | 客户端改动 |
+|---|---|---|---|---|
+| **A1 服务端桥接** | 中继 Server 加一个身份源，把 IAM 当认证方，自己仍签发 device token | 需额外加二维码会话端点（开源 Server 没有） | 需 IAM 暴露密码校验 API（**多数 IAM 不开**，见风险） | 零改动（客户端仍走 provider 列表） |
+| **A2 客户端直连 IAM** | App 走 IAM 的 OIDC 授权码 / 设备码流程，中继只校验 IAM token | App 自己渲染二维码、自己轮询 | App 直接调 IAM 密码接口 | 大：改 `remote_account.dart`、`server_api.dart`、登录 UI、token 刷新 |
+| **A3 内嵌 IAM 登录页** | App 用 WebView 打开 IAM 登录页，页面自带扫码与密码两种 tab，回调换 token | IAM 页面提供 | IAM 页面提供 | 小：复用现有 `loginUrl` 打开方式 |
+
+**A3 值得优先评估**：它把"扫码 + 密码"两件事交给 IAM 登录页本身，不需要 IAM 额外开放两套登录 API，客户端改动最小。缺点是体验上仍是网页（现有主路径已经是这样，用户无感知落差），且要确认 IAM 登录页允许被内嵌（`X-Frame-Options` / CSP 只影响 iframe，WebView 通常不受限，但需实测）。
+
+**关于密码登录的风险**：多数统一身份平台**不开放明文密码校验接口**（只给 OAuth/OIDC 或扫码）。若 IAM 属于这类，A1/A2 的"账号密码"就无法直连实现，只能走 A3 的内嵌登录页，或由 IAM 侧单独开通。**这是 11.1.3 的首要待确认项。**
+
+#### 11.1.3 待确认（阻塞项）
+
+1. **具体对接哪套 IAM**？（自建统一身份平台 / `ai.thchengtay.com` 体系 / 其他 OIDC 提供方）
+2. **IAM 是否开放这三种能力**：① 扫码登录（生成码 + 轮询状态）② 账号密码校验接口 ③ 登录页可被 WebView 内嵌。任一不支持都会砍掉对应路径。
+3. IAM 侧能否新增 OAuth 客户端（client_id / redirect_uri / 回调域名）？由谁开通？
+4. Host 端（如意插件）是否也要跟着改登录方式，还是继续用本地配置？
+
+### 11.2 待办 B：固化中继服务器地址
+
+**现状问题**：地址散落在 4 处、默认指向第三方公共服务，用户还能在高级选项里随便改成别的 Server。
+
+| 位置 | 内容 | 性质 |
+|---|---|---|
+| `packages/dsh_remote/lib/src/server/server_api.dart:13` | `defaultRemoteServer = 'https://dsh.r2049.cn'` | 库层默认值 |
+| `app/lib/state/hosts_state.dart:374` | `defaultRelayServer = 'https://dsh.r2049.cn'` | App 层默认值（与上面重复定义） |
+| `app/lib/remote/relay/relay_backend.dart:182` | `serverLabel => 'dsh.r2049.cn'` | 界面显示用的硬编码字符串 |
+| `app/lib/ui/remote/remote_screen.dart:47`、`relay_login_sheet.dart` | 副标题文案、高级选项输入框 | 界面入口 |
+
+另有 `app/lib/l10n/*.arb` 里 3 条含 `dsh.r2049.cn` 的文案（`remoteRestoreServer` / `remoteWebConsoleProvider` / `remoteSelfHostedSignInHelp`），改地址时一并处理，并跑 `python3 app/tool/l10n_merge.py`。
+
+**目标**：默认地址指向**自有中继**，且只有一个来源，改地址不需要动多处。
+
+**要做的三件事**：
+1. 消除双份默认值：`dsh_remote` 与 App 各一份 `dsh.r2049.cn`，统一到单一常量（或编译期注入）。
+2. 地址改为可配置：建议走 `--dart-define`（如 `RELAY_SERVER`）+ 单一兜底常量，避免再出现"改了一处忘了另一处"。
+3. 定夺高级选项里的自定义 Server 是否保留。若要"固化"，应默认隐藏或降级为仅内网调试可见；若不隐藏，需明确它不参与正式分发版本。
+
+**待确认**：自有中继的正式域名/地址还没定，取决于并行进行的中继测试结果（见 11.3）。
+
+### 11.3 与并行任务的分工
+
+**中继服务器的测试由另一个任务在推进中**，本任务不重复做部署与联调，避免两边同时改同一套服务配置。
+
+| 事项 | 归属 |
+|---|---|
+| 中继服务部署、公网可达性、HTTPS/TURN、压测与稳定性 | **另一个任务（进行中）** |
+| 正式中继地址定稿 | 等中继任务结论 |
+| 账号适配 IAM 的方案与实现（含扫码 / 密码两种登录入口） | 本任务（待 IAM 信息补齐） |
+| 客户端地址固化（11.2 的代码改动） | 本任务，等地址定稿后执行 |
+| 手机端 UI 全流程真机验证（含扫码、密码两条登录路径） | 地址与账号都定下来之后 |
+
+### 11.4 可实现性分类
+
+| 事项 | 状态 | 判断依据 | 兜底方案 | 回滚方案 |
+|---|---|---|---|---|
+| 地址单一化 + `--dart-define` 注入 | 可实现项 | 4 处硬编码已定位，改动局部；现有测试可覆盖 | 地址未定时保留现有默认值 | 还原改动文件，恢复 `dsh.r2049.cn` 默认 |
+| 默认地址切到自有中继 | **待确认项** | 依赖 11.3 中继测试结论 | 未定稿前继续用现有地址 | 保留 `relayServerProvider` 手工覆盖入口 |
+| App 内渲染二维码（形态 A：App 显示码） | 可实现项 | 库层已有 QR 会话与 `scanUrl` 轮询；只需加一个二维码渲染组件 + 状态页 | 继续用浏览器打开链接 | 保留 `_Waiting` 的原始链接入口 |
+| App 扫码（形态 B：相机扫桌面码） | 当前暂不实现项 | 需新增相机权限与二维码解析依赖 | 走 A3 内嵌 IAM 登录页，扫页面上的码 | 不引入权限即退回 A3 / 浏览器 |
+| 密码登录提升为正式入口 | 可实现项 | `SelfHostedLoginSheet` 的登录逻辑可复用，去掉"必填服务器地址"即可 | 保留高级选项入口 | 恢复原高级选项形态 |
+| IAM 服务端桥接（A1） | 待确认项 | 需 IAM 开通 OAuth 客户端并暴露密码校验；Server 可二开（见 §12），但单账号改多账号是主要工作量 | 改用 A3 内嵌登录页 | 移除新增 provider，回到原 provider 列表 |
+| IAM 客户端直连（A2） | 待确认项 | 需改客户端登录链与 token 刷新，工作量最大 | 退回 A1 或 A3 | 保留旧登录路径开关 |
+| IAM 内嵌登录页（A3） | 待确认项 | 需实测 IAM 登录页能否在 WebView 内完成回调 | 退回浏览器 OAuth 主路径 | 关闭内嵌开关，走系统浏览器 |
+| 密码由 IAM 接口直校验 | **技术不可实现项**（若无条件变化） | 多数统一身份平台不开放明文密码校验接口 | 走 A3 内嵌登录页，密码在 IAM 页面输入 | — |
+| 去掉高级选项自定义 Server | 当前暂不实现项 | 内网联调仍需它；正式分发前才收口 | 用编译期开关按构建类型隐藏 | 恢复输入框 |
+
+### 11.5 本节不作为承诺
+
+本节只记录方向与前提，**未做任何代码改动，也没有与中继测试任务合并结论**。动手前需先补齐 11.1.3、11.2 的待确认项，并按仓库规则走方案共识。
+
+登录方式的硬性要求已明确：**扫码登录与账号密码登录两个入口都要有**，不能只保留浏览器 OAuth 一种。具体形态（App 显示二维码 / App 扫码）与实现路径（A1 / A2 / A3）取决于 IAM 实际开放的能力。
+
+## 12. 中继服务器二开可行性（2026-11-07 核实上游源码）
+
+### 12.1 结论先说
+
+**可以二开，且没有许可障碍。** 但要把话说准：**「接 IAM」不是加一个 provider 配置项，而是要把 Server 的单账号模型改成多账号模型**——真正的成本在这一块，不在登录那一行代码。
+
+| 前置条件 | 结论 | 依据 |
+|---|---|---|
+| 许可允许修改分发 | ✅ | 仓库根 `LICENSE` 为 **MIT**（`THIRD_PARTY_NOTICES.md:120-126` 已登记），允许修改、商用、闭源分发，只需保留版权声明 |
+| 源码完整可得 | ✅ | 上游 `apps/server/src` 共 7 个文件（`config.ts` / `gateway.ts` / `ice.ts` / `logger.ts` / `main.ts` / `server.ts` / `store.ts`），合计约 70KB，无二进制黑盒 |
+| 官方态度 | ✅ 明确鼓励 | `apps/server/README.zh.md` 的 FAQ：「为什么没有多账号、完整 membership 和 Remote Web？这些能力本身实现门槛不高……**建议按自己的需求修改**」 |
+| 是否已有先例 | ✅ 本仓库已改过 | `packages/dsh_remote/tool/e2e/patch-relay-attach.mjs` 就是用字符串锚点替换给上游 `gateway.ts` 挂 relay node 的补丁，注释写明「Fails loudly if upstream moved」 |
+| 完整版 Server 是否开源 | ❌ | README 明确「完整 Server Web 的产品形态仍在调整，暂不承诺在本仓库开源」。开源的是**最小自部署版**（单账号） |
+
+### 12.2 认证层的真实现状（改造前）
+
+不要被"provider 列表"迷惑——**开源最小 Server 里没有任何 provider 抽象**，认证写死在一个分支里。
+
+| 环节 | 实现位置 | 真实做法 |
+|---|---|---|
+| 账号密码校验 | `server.ts` `/api/v1/auth/login`（约 237–246 行） | 直接两次字符串比较：`equal(email, store.account)` 且 `equal(password, config.password)`。账号密码来自环境变量 `DSH_SERVER_ACCOUNT` / `DSH_SERVER_PASSWORD` |
+| 登录产物 | 同上 | `secret()` 随机串存进**内存 Map**（`sessions`，key 是 token 的 hash，value **只有过期时间**），8 小时；同时下发 `dsh_session` HttpOnly Cookie |
+| 会话校验 | `accountAuth()` | 只判断 token 在 sessions 里且未过期。**不携带任何身份信息**——因为只有一个账号，不需要 |
+| 持久化模型 | `store.ts` state schema | `{ version: 1, account, salt, verifier, devices, tokens }`，**单个 `account` 字段为根**；账号变了就清空 `devices` 与 `tokens`（第 39–40 行） |
+| 设备归属 | `server.ts` 的 `descriptor()` | `membershipId = account:${hash(store.account).slice(0,16)}`，**所有设备同一个 membershipId** |
+| 连接授权 | `gateway.ts` | 全文只有一处 `authorization: 'account'`（约 422 行），**没有任何跨账号校验**，因为不存在第二个账号 |
+| 扫码登录 | — | **不存在**。`/api/v1/auth/login` 只有密码一条路。客户端库的 `startQrLogin` 打的是**托管版** `dsh.r2049.cn` 的端点，开源版没有对应路由 |
+| 部署形态 | `compose.yaml` | 单容器 + `server-data` 命名卷 + `restart: unless-stopped`，全是环境变量注入，改造成本低 |
+
+### 12.3 接 IAM 的改造分解
+
+四块，按依赖顺序。**第 3 块是主要工作量，不是登录那块。**
+
+| # | 改造块 | 落点 | 改动内容 | 规模 | 风险 |
+|---|---|---|---|---|---|
+| 1 | 登录分支接 IAM | `server.ts` login 分支 | 把两个 `equal()` 换成「调 IAM 校验 / 验 IAM 签发的 token」，返回账号标识 | 小（几十行） | 低。取决于 IAM 是否开放密码校验接口 |
+| 2 | 会话承载身份 | `sessions` Map + `accountAuth()` | value 从 `expiresAt` 改为 `{ account, expiresAt }`，`accountAuth()` 返回账号而非 void，`profile()` 不再返回常量 | 中 | 低。但所有调用 `accountAuth()` 的路由要跟着改签名 |
+| 3 | **数据模型多账号化** | `store.ts` + `server.ts` `descriptor()` | state schema 从单 `account` 改为 `accounts: Record<id, {...}>`，`devices` / `tokens` 按账号分区，`membershipId` 按设备所属账号计算；**存量单账号数据要有迁移路径** | **大** | 中高。数据迁移 + 现有 `server-data` 卷里的设备凭据不能丢 |
+| 4 | **连接授权按账号隔离** | `gateway.ts` `connect.incoming` | 建立连接前校验双方 `owner_account` 一致，否则拒绝 | 中 | **高（安全）**。不做就是越权：A 账号的手机能连 B 账号的电脑，Noise 加密也救不了——因为身份授权在 Server 侧 |
+
+补充：`gateway.ts` 里还有 relay 分配、TURN 凭据下发等逻辑，多账号后要确认 TURN 凭据也按账号签发（现有 `username=<时间戳>:<deviceId>` 已带 deviceId，问题不大）。
+
+### 12.4 扫码登录的缺口
+
+这是二开里独立的一块缺口，**两条路只能选一条**：
+
+| 做法 | 说明 | 代价 |
+|---|---|---|
+| 服务端自建二维码会话 | 加 `POST /api/v1/auth/qr`（生成码）+ 轮询状态 + 确认接口，签名沿用现有 session 机制 | 要新增 3 个端点与状态存储；客户端 `startQrLogin` 的字段恰好能对上（它本来就是按托管版协议写的） |
+| 走 IAM 登录页（A3） | Server 只留一个「打开 IAM 登录页」的入口，扫码和密码由 IAM 页面提供 | Server 端改动最小，但 App 里是网页体验 |
+
+**建议**：若选 A1（服务端桥接）就必须自建二维码会话；若选 A3 则连第 1 块改造都能省掉一半（只换登录页，不动 `equal()` 比较）。
+
+### 12.5 二开方式：fork，不要继续用字符串补丁
+
+| 方式 | 适用 | 判断 |
+|---|---|---|
+| 字符串锚点替换（现有 `patch-relay-attach.mjs` 手法） | 挂一个小模块、改一两行 | ⚠️ 只适合 relay node 这种局部挂载。**上游一改锚点就整体失效**，脚本自己都要 `throw` |
+| Fork 独立仓库 | 改数据模型、改授权逻辑 | ✅ **本次应该用这个**。改动涉及 `store.ts` schema、`gateway.ts` 授权、登录分支三处联动，补丁方式无法维护 |
+
+Fork 后的维护约定建议：
+- 保留 `LICENSE` 与版权声明（MIT 唯一硬性要求）。
+- 记录 fork 起点 commit，上游安全修复要能 cherry-pick 回来。
+- 与上游协议的线格式**不要动**，否则 `packages/dsh_remote` 客户端与如意插件要同步改，得不偿失。
+
+### 12.6 可实现性分类
+
+| 事项 | 状态 | 判断依据 | 兜底方案 | 回滚方案 |
+|---|---|---|---|---|
+| Fork `apps/server` 并独立构建 | **可实现项** | MIT 许可 + 源码完整 + 官方鼓励 + 已有补丁先例 | 继续用托管版 `dsh.r2049.cn` | 保留原 `compose.yaml` 与镜像 tag，随时切回 |
+| 登录分支换成 IAM 校验（块 1） | 可实现项 | 落点单一，`server.ts` 一处分支 | IAM 不支持密码校验时改走 A3 | 恢复 `equal()` 比较 |
+| 会话承载账号身份（块 2） | 可实现项 | 内存 Map 结构简单，改动局限 | 临时用单账号跑通后再改 | 恢复 `expiresAt` 单值 |
+| Store 多账号化（块 3） | 可实现项，工作量最大 | schema 集中在一个文件；需写迁移 | 一期可只支持单账号 + IAM 登录，多账号延后 | 保留原 `state.json` 备份，回退旧镜像 |
+| Gateway 跨账号校验（块 4） | 可实现项，**安全必做** | `gateway.ts` 只有一处 `authorization: 'account'` 需扩展 | 无兜底——多账号上线前必须做，否则是越权缺陷 | 回退到单账号模式 |
+| 服务端自建二维码会话 | 待确认项 | 需先定扫码形态（见 11.1.1）与是否走 A1 | 走 A3 内嵌 IAM 登录页 | 关闭该端点，回退密码登录 |
+| 直接对接 IAM 密码校验接口 | **技术不可实现项**（若 IAM 不开放） | 多数统一身份平台不开放明文密码校验 | 走 A3 内嵌登录页 | — |
+| 复用上游「完整版 Server」 | 技术不可实现项 | 上游明确不开源完整版 | 自建最小版 + 二开 | — |
+
+### 12.7 风险清单
+
+| 风险 | 影响 | 应对 |
+|---|---|---|
+| 块 3 数据迁移出错 | 存量设备凭据丢失，所有设备要重新登录 | 迁移前备份 `server-data` 卷；先在同构环境演练 |
+| 块 4 漏做跨账号校验 | **跨账号越权**，A 的手机可连 B 的电脑 | 列为一期阻塞项，配一条跨账号连接必须失败的测试 |
+| 上游大改导致 fork 偏离 | 无法 cherry-pick 安全修复 | 改动尽量收敛在 4 个落点，不动 `packages/protocol` |
+| 误改线协议 | 客户端与插件全要跟着改 | 协议字段只加不改；`packages/dsh_remote` 的 fixtures 当契约测试 |
+| 只做块 1、跳过 3/4 | 看起来能用，实为单账号换皮 | 明确分期：一期单账号 + IAM 登录可交付，多账号单独排期 |
+
+## 13. 手机端 IAM 登录完整方案（2026-11-07 实测桌面端登录态）
+
+### 13.1 先厘清一个容易误解的前提
+
+「桌面端如意已经登录 IAM」是事实，但**它登录的 IAM 和中继 Server 用的账号是两套系统，彼此不知道对方存在**。
+
+| 对比项 | 桌面端已登录的 IAM | 中继 Server 的账号 |
+|---|---|---|
+| 系统 | `https://ai.thchengtay.com/aiserver` | ds-harness-remote 的 `DSH_SERVER_ACCOUNT` |
+| 插件 | `@xianxingtong/dsh-ai-server-account` | 无（Server 内置单账号） |
+| 凭据形态 | IAM JWT（HS256，24h）+ opaque refreshToken | 账号密码 → 内存 session token |
+| 存放位置 | `~/.xianxingtong/.credentials.yaml` 的 `ai-server-account/account` | 环境变量 / `server-data` 卷 |
+| 用户标识 | `user.id` / `username` / `email` | 单个字符串 `account` |
+
+实测到的桌面端登录态（值不外泄，只看结构与形态）：
+
+```
+status       = active
+issuer       = https://ai.thchengtay.com/aiserver
+accessToken  = JWT，388 字符，3 段，alg=HS256，有效期 24h
+refreshToken = opaque，67 字符（非 JWT）
+claims       = user_id, email, role, token_version, sid, bnd, exp, nbf, iat
+                （无 iss、无 aud）
+user         = { id, username, email, balance, frozen_balance, total_recharged }
+```
+
+**所以「手机端呢」的直接答案是**：手机端即使也登录了 IAM，**仍然连不上桌面**——因为中继不认识 IAM，它只认环境变量里那个单账号。桌面端"已登录 IAM"这件事，对中继是隐形的。
+
+要让手机连上，必须**先打通中继与 IAM 的身份识别**，这是所有路径的共同前置。
+
+### 13.2 一个硬约束：中继无法自己验证 IAM 的 token
+
+这一条决定了方案形态，实测证据如下：
+
+| 探测项 | 结果 | 含义 |
+|---|---|---|
+| JWT 签名算法 | `alg=HS256` | **对称密钥**，第三方没有密钥就无法验签 |
+| `iss` / `aud` 声明 | 均缺失 | 没法按标准 OIDC 校验签发方与受众 |
+| `/aiserver/.well-known/jwks.json` | 200，但返回 **SPA 的 index.html** | 假 200，实际**不存在** JWKS |
+| `/aiserver/.well-known/openid-configuration` | 同上，实为 index.html | **没有 OIDC discovery** |
+| `/aiserver/backend-api/auth/{me,userinfo,introspect}` 等 | 全 404 | 常规身份验证接口不存在 |
+| 对照：`/backend-api/codex/models` | 无 key → **401**，带 key → **200** | 证明 `backend-api` 前缀是真实 API 区，上面的 404 是真不存在 |
+
+**结论**：现有 IAM **不具备**让中继服务端独立完成身份验证的能力（HS256 无法本地验，又没有 introspect/userinfo/JWKS）。
+
+因此方案有一个**外部阻塞项**：必须由 IAM 侧提供下列任一能力，否则中继无法确认"这个人是同一个人"。
+
+| 需 IAM 提供 | 用途 | 优先级 |
+|---|---|---|
+| `POST /introspect`（输入 accessToken，返回 user_id 与有效性） | 中继验 token 的唯一可行方式（HS256 前提下） | **必须** |
+| 或改为 RS256/ES256 + 提供 JWKS | 中继可本地验签，无需每次回源 | 更优，但要改 IAM |
+| 或发放"中继专用"的 client 凭据 + 授权码流程 | 标准 OIDC 路径 | 需 IAM 开 client |
+
+### 13.3 手机端要不要登录 IAM？—— 不必，推荐不登录
+
+关键认知：**手机需要的是中继签发的 device token，不是 IAM 身份本身**。IAM 只在「首次证明我和桌面是同一个人」时用一次。
+
+| 方式 | 手机要登录 IAM 吗 | 用户操作 | 体验 | 前提 |
+|---|---|---|---|---|
+| **M1 桌面绑定码（推荐）** | ❌ 不需要 | 桌面显示码 → 手机扫码/输码 | 最好，两下完成 | 中继支持 client 绑定码（需二开） |
+| **M2 手机自己登录 IAM** | ✅ 需要 | 手机输 IAM 账号密码 / IAM 扫码 | 一般 | IAM 开放登录 + 13.2 的验证接口 |
+| **M3 中继独立账号（现状）** | ❌ 不需要 | 手机输另一套账号密码 | 差，记两套密码 | 无，现在就能用 |
+
+**推荐 M1 为主、M2 兜底**：
+- 平时用 M1：手机零 IAM 凭据，桌面在线就能授权
+- 桌面不在线、需新增手机时用 M2：手机自己登录一次 IAM
+- M3 保留为内网调试与 IAM 不可用时的退路
+
+### 13.4 推荐方案端到端流程（M1 为主）
+
+```
+桌面如意(已登IAM)        中继 Server              IAM              手机App
+     |                      |                     |                  |
+     |--① 注册Host(带IAM accessToken)------------->|                  |
+     |                      |--② introspect ----->|                  |
+     |                      |<-- user_id ---------|                  |
+     |<--③ device token ----| owner=iam:<user_id> |                  |
+     |                      |                     |                  |
+     |--④ 生成绑定码-------->| code → iam:<user_id>|                  |
+     |   (界面显示二维码/6位码)                     |                  |
+     |                      |                     |                  |
+     |                      |<--⑤ 提交码(扫码/输入)------------------|
+     |                      |--⑥ 校验码(未用/未过期)                  |
+     |                      |---⑦ 签发 device token(同 owner)-------->|
+     |                      |<--⑧ 连接(device token)------------------|
+     |<=====⑨ Noise 端到端加密(P2P/TURN/Relay) =====>|                  |
+```
+
+要点：
+
+| 环节 | 关键设计 |
+|---|---|
+| ① | 桌面把**已有**的 IAM accessToken 交给中继，不要求重新登录 |
+| ② | 中继调 IAM 验证（13.2 的阻塞项）。**只此一次**，之后不再依赖 IAM |
+| ③ | 中继签发自己的 device token，`owner_account = iam:<user_id>`。这是长期凭据，走协议已有的 refresh 轮换 |
+| ④ | 绑定码 **10 分钟过期、单次消费**，沿用协议 `host-registration-codes` 的既有约束 |
+| ⑤⑥⑦ | 手机不需要任何 IAM 凭据，只交一个码 |
+| ⑧⑨ | 与现有链路完全一致，Noise IK 端到端加密，中继看不到明文 |
+
+**为什么不让手机直接复用桌面的 IAM token**：IAM accessToken 只有 24h，桌面要长期在线必须能自动续；把 refreshToken 复制到手机等于凭据扩散到多设备，IAM 侧无法区分是哪台设备在用，吊销时会把桌面一起踢掉。**用中继 device token 才是正解**——它本来就有按设备吊销的能力。
+
+### 13.5 三端改造清单
+
+| 端 | 改造 | 依赖 | 规模 |
+|---|---|---|---|
+| **中继 Server** | ① 加 IAM 身份适配（login 分支换成"收 IAM token → introspect → 写 owner"）<br>② session 承载账号（§12 块 2）<br>③ store 多账号化（§12 块 3）<br>④ gateway 跨账号校验（§12 块 4）<br>⑤ `register-with-code` 扩展支持 `role=client`（协议现状只允许 host）<br>⑥ 新增「账号侧生成绑定码」端点 | IAM introspect 接口 | 大 |
+| **桌面如意** | ① Host 注册时带上 IAM accessToken（读 `ai-server-account` 凭据）<br>② 远程面板加「授权手机」入口：生成码 + 显示二维码<br>③ IAM token 过期后自动用 refreshToken 续，再向中继换新 device token | 中继①~⑥ | 中 |
+| **手机 App** | ① 新增「扫码绑定」入口：相机扫码 + 手输 6 位码<br>② 新增「用 IAM 账号登录」入口（M2，扫码或密码）<br>③ 登录 UI 按服务端能力动态展示（现有 `providers` 机制可复用） | 中继端点 | 中 |
+
+**手机端扫码要加的依赖**：现有 `pubspec.yaml` 没有二维码解析组件，需引入（如 `mobile_scanner`）并申请相机权限；二维码**渲染**（M1 桌面端显示码）也需要一个轻量组件。
+
+### 13.6 实施顺序（每步都可独立验证）
+
+| 阶段 | 内容 | 验证方式 |
+|---|---|---|
+| P0 | IAM 侧提供 introspect 或改非对称签名 | 拿真实 token 调通，返回 user_id |
+| P1 | 中继：IAM 适配 + session 身份（§12 块 1+2） | 桌面用 IAM token 注册 Host 成功，设备 owner 是 `iam:<user_id>` |
+| P2 | 中继：绑定码端点 + `register-with-code` 支持 client | 手工 curl：生成码 → 用码注册 client → 两端 owner 一致 |
+| P3 | 桌面：授权手机 UI + 二维码 | 面板能出码，10 分钟过期，二次使用被拒 |
+| P4 | 手机：扫码绑定入口 | 真机扫码 → 连上 → 出新消息 |
+| P5 | 中继：多账号化 + 跨账号校验（§12 块 3+4） | **跨账号连接必须失败**的测试用例 |
+| P6 | 手机：M2 IAM 登录入口（兜底） | 手机独立登录 IAM 后能列出自己的 Host |
+
+**P1~P4 打通就已经能"手机连自己电脑"了**，P5 是上线多用户前必须补的，P6 是体验补充。
+
+### 13.7 可实现性分类
+
+| 事项 | 状态 | 判断依据 | 兜底方案 | 回滚方案 |
+|---|---|---|---|---|
+| 桌面显示绑定码 + 手机扫码绑定（M1） | **可实现项** | 协议已有匹配码机制可复用；桌面已持 IAM 凭据 | 退 M3 中继账号密码 | 关掉入口，回退密码登录 |
+| 手机自己登录 IAM（M2） | 待确认项 | 卡在 13.2：IAM 无 introspect/JWKS，HS256 无法自验 | 只做 M1，M2 延后 | 隐藏入口 |
+| 中继验 IAM token | **待确认项（外部阻塞）** | 实测无 introspect、无 JWKS、无 OIDC discovery | 由 IAM 改 RS256 或开 introspect | — |
+| `register-with-code` 支持 client | 可实现项 | 协议限定 `role=host`，需改校验；客户端已有对应请求 schema | 不改协议，手机走 M2/M3 | 恢复只允许 host |
+| 手机扫码（相机） | 当前暂不实现项 | 需新增加密依赖与权限；P0 不阻塞 | 手输 6 位码 | 不引入权限即只留手输 |
+| 桌面 IAM token 过期自动续 | 可实现项 | 凭据里已有 refreshToken 与 expiresAt | 过期后要求重新登录 | 保留手动重登入口 |
+| 手机复用桌面 IAM token | **技术不可实现项** | 24h 过期 + 凭据扩散 + 无法按设备吊销 | 用中继 device token 代替 | — |
+| IAM 支持标准 OIDC（含 JWKS） | 技术不可实现项（现状） | 无 discovery、无 JWKS，HS256 | 由 IAM 团队改造 | — |
+
+### 13.8 风险与待确认
+
+| 风险 | 影响 | 应对 |
+|---|---|---|
+| IAM 不提供验证接口 | 整个 M1/M2 无法成立，只能留 M3 | **P0 是唯一硬阻塞**，先谈 IAM |
+| IAM token 24h 过期 | 桌面需定期续期，否则无法再注册 Host | 用 refreshToken 自动续；中继 device token 长期有效，断连不影响 |
+| 绑定码泄露 | 他人可把自己的手机绑定到你的账号 | 10 分钟 + 单次消费 + 绑定后弹窗确认；协议已有此约束 |
+| 跨账号越权（P5 未做） | 任意手机可连任意桌面 | P5 列为上线阻塞项 |
+| 手机端多一条相机权限 | 应用商店审核与用户信任 | 仅在扫码时申请，明确文案 |
+
+**待确认（按阻塞顺序）**：
+1. IAM 能否提供 introspect / 或改 RS256 提供 JWKS？（**决定方案能否成立**）
+2. IAM 是否允许桌面端的 accessToken 被第三方服务验证（跨服务信任）？
+3. 绑定码的展示形态：二维码 + 6 位码是否都要？
+4. 是否允许多台手机绑同一账号？（协议支持多 Client，确认产品是否要限制）
+
